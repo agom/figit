@@ -1,0 +1,5 @@
+# PTY integration tests each spawn a real terminal and a real `git` process.
+# Running all of them at once saturates the machine and makes the tests
+# load-sensitive, so cap the harness concurrency.
+[env]
+RUST_TEST_THREADS = "4"

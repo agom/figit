@@ -1,0 +1,30 @@
+[package]
+name = "figit"
+version = "0.1.0"
+edition = "2021"
+description = "A terminal Git client built around a real commit graph"
+license = "MIT"
+repository = "https://github.com/agom/figit"
+
+[dependencies]
+axoupdater = { version = "0.10.2", features = ["blocking"] }
+gix = { version = "0.87", features = ["max-performance"] }
+ratatui = "0.30"
+syntect = "5"
+similar = "2"
+crossterm = "0.29"
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+libc = "0.2"
+tempfile = "3"
+notify = "8"
+
+[dev-dependencies]
+portable-pty = "0.9"
+vt100 = "0.16"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

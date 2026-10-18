@@ -1,0 +1,18 @@
+# Rust build output
+target/
+
+# Local interactive TUI test repository (contains its own .git directory)
+/test_repo/
+
+# macOS
+.DS_Store
+
+# Editor/project files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local environment files
+.env
+.env.*
