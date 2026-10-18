@@ -1,0 +1,153 @@
+<p align="center">
+  <img src="assets/figit.svg" alt="figit logo" width="160">
+</p>
+
+# figit
+
+A Git TUI.
+
+`figit` renders a multi-lane DAG (merge topology, branch colors, refs) and puts
+useful workflows on top of it: file/hunk/line staging, commit/amend/fixup,
+branch and tag actions, fetch/pull/push, stash management, interactive rebase,
+and conflict resolution.
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="figit showing a repository with staged and unstaged changes" width="880">
+</p>
+
+Inspecting a commit shows its details and syntax-highlighted diff:
+
+<p align="center">
+  <img src="assets/screenshot-commit.png" alt="figit showing a commit's details and diff" width="880">
+</p>
+
+Resolve merge conflicts with a three-way Ours / Theirs / Result view:
+
+<p align="center">
+  <img src="assets/screenshot-conflict.png" alt="figit resolving a merge conflict with a three-way view" width="880">
+</p>
+
+Plan an interactive rebase — reorder, reword, squash, fixup, or drop:
+
+<p align="center">
+  <img src="assets/screenshot-rebase.png" alt="figit planning an interactive rebase" width="880">
+</p>
+
+Manage stashes without leaving the app:
+
+<p align="center">
+  <img src="assets/screenshot-stash.png" alt="figit's stash manager" width="880">
+</p>
+
+## Install
+
+Requires `git` on `PATH`.
+
+```sh
+curl -sSfL https://figit.dev/install | sh
+```
+
+Or install from source:
+
+```sh
+cargo install --git https://github.com/agom/figit.git
+```
+
+Press `U` to check for or install an update, then restart.
+
+## Usage
+
+```sh
+figit [PATH]        # open PATH (defaults to the current directory)
+figit --help
+figit --version
+```
+
+## Key map
+
+### General
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Cycle focus between panels |
+| `g` | Toggle the graph pane |
+| `j` / `k` (or `↑` / `↓`) | Move the selection / scroll |
+| `/` | Search commits: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
+| `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
+| `U` | Check for or install an update |
+| `?` | Toggle the in-app key map |
+| `q` | Quit |
+| `Esc` | Close the active overlay |
+
+### Graph
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Check out the selected ref / commit |
+| `c` | Checkout |
+| `b` / `t` | Create branch / tag (the tag popup can push the tag with `Ctrl-P`) |
+| `r` | Reset (soft, mixed, hard) |
+| `n` / `d` | Rename branch / delete branch or tag (←/→ picks the target; `r` also deletes remotely) |
+| `p` | Cherry-pick, or pull when the selected commit is the current branch |
+| `x` | Revert commit |
+| `w` / `e` | Reword / edit commit (edit pauses an interactive rebase) |
+| `i` | Interactive rebase plan |
+| `F` | Fetch |
+| `+` | Push the selected branch, or the selected tag when the commit has no branch |
+
+### Staging and diff
+
+| Key | Action |
+| --- | --- |
+| `Space` | Stage/unstage the selected file, hunk, or line |
+| `f` / `h` / `l` | File / hunk / line mode |
+| `F` | Apply the whole file |
+| `x` | Discard unstaged changes |
+| `s` | Stash manager |
+| `c` / `a` | Commit / amend |
+| `v` | Toggle unified and side-by-side diffs |
+| `[` / `]` | Previous / next hunk |
+| `j` / `k` | Previous / next changed line in line mode |
+| `←` / `→` | Pan the diff horizontally |
+| `L` | Load the full diff when a large diff was truncated |
+
+### Conflict resolver
+
+| Key | Action |
+| --- | --- |
+| `o` / `t` / `b` | Take Ours / Theirs / Base |
+| `e` | Open the file in `$VISUAL` / `$EDITOR` |
+| `Enter` | Confirm the previewed result |
+| `[` / `]`, `h` / `l` | Switch hunk, pan |
+
+### Stash manager (`s`)
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Select a stash |
+| `u` | Include untracked files |
+| `s` | Save a new stash |
+| `a` | Apply the selected stash |
+| `p` | Pop the selected stash |
+| `d` | Drop the selected stash |
+| `Esc` / `q` | Close |
+
+While saving, type a message and press `Enter` (`Tab` toggles untracked, `Esc`
+cancels); dropping asks to confirm with `y` or `Enter`.
+
+### Rebase
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Move between commits |
+| `Alt`+`↑` / `Alt`+`↓` | Reorder the selected commit |
+| `←` / `→` or `Space` | Cycle the action |
+| `p` / `w` / `e` / `s` / `f` / `d` | pick / reword / edit / squash / fixup / drop |
+| `Enter` | Run the plan |
+| `Ctrl+C` | Continue a paused rebase |
+| `Ctrl+A` | Abort a paused rebase |
+| `c` | Replace the edited commit while paused |
+
+## License
+
+MIT
