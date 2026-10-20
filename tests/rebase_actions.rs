@@ -1340,6 +1340,53 @@ fn fetch_updates_remote_tracking_refs_and_graph() {
 }
 
 #[test]
+fn branch_with_a_deleted_upstream_is_reported_as_gone() {
+    let remote = tempfile::tempdir().expect("create remote directory");
+    let remote_path = remote.path().join("origin.git");
+    git_ok(
+        remote.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            "--initial-branch=main",
+            remote_path.to_str().unwrap(),
+        ],
+    );
+    let local = tempfile::tempdir().expect("create repository directory");
+    let path = local.path();
+    git_ok(path, &["init", "--quiet", "--initial-branch=main"]);
+    configure_user(path);
+    std::fs::write(path.join("file.txt"), "base\n").unwrap();
+    git_ok(path, &["add", "file.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "base"]);
+    git_ok(
+        path,
+        &["remote", "add", "origin", remote_path.to_str().unwrap()],
+    );
+    git_ok(
+        path,
+        &["push", "--quiet", "--set-upstream", "origin", "main"],
+    );
+
+    let backend = backend::open(path).expect("open repository");
+    let graph = backend.build_graph().expect("build graph");
+    let tracking = graph
+        .tracking_for_branch("main")
+        .expect("main should have upstream tracking data");
+    assert!(!tracking.gone);
+
+    // Simulate the remote deleting the branch and a fetch pruning the
+    // remote-tracking ref locally.
+    git_ok(path, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    let graph = backend.build_graph().expect("rebuild graph");
+    let tracking = graph
+        .tracking_for_branch("main")
+        .expect("gone upstreams are still reported");
+    assert!(tracking.gone);
+}
+
+#[test]
 fn repository_without_remotes_has_no_remote_choices() {
     let (temp, _, _) = repository();
     let backend = backend::open(temp.path()).expect("open repository");
@@ -2145,4 +2192,57 @@ fn delete_tag_removes_it_locally_and_remotely() {
     )
     .status
     .success());
+}
+
+#[test]
+fn rebase_onto_replays_the_current_branch_on_a_new_base() {
+    let (temp, target, tip) = repository();
+    let path = temp.path();
+    git_ok(path, &["checkout", "--quiet", "-b", "feature", &target]);
+    std::fs::write(path.join("feature.txt"), "feature\n").unwrap();
+    git_ok(path, &["add", "feature.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "feature work"]);
+    let old_feature = git_ok(path, &["rev-parse", "HEAD"]);
+
+    let backend = backend::open(path).expect("open repository");
+    let outcome = backend.rebase_onto("main").expect("rebase onto main");
+    assert_eq!(outcome, RebaseOutcome::Completed);
+
+    let new_feature = git_ok(path, &["rev-parse", "HEAD"]);
+    assert_ne!(old_feature, new_feature);
+    assert_eq!(git_ok(path, &["rev-parse", "HEAD~1"]), tip);
+    assert_eq!(git_ok(path, &["log", "-1", "--format=%s"]), "feature work");
+    assert_eq!(
+        git_ok(path, &["symbolic-ref", "--short", "HEAD"]),
+        "feature"
+    );
+}
+
+#[test]
+fn rebase_onto_conflict_leaves_the_rebase_in_progress_until_aborted() {
+    let (temp, target, _) = repository();
+    let path = temp.path();
+    git_ok(path, &["checkout", "--quiet", "-b", "feature", &target]);
+    std::fs::write(path.join("file.txt"), "feature side\n").unwrap();
+    git_ok(path, &["commit", "--quiet", "-am", "feature edit"]);
+    git_ok(path, &["checkout", "--quiet", "main"]);
+    std::fs::write(path.join("file.txt"), "main side\n").unwrap();
+    git_ok(path, &["commit", "--quiet", "-am", "main edit"]);
+    git_ok(path, &["checkout", "--quiet", "feature"]);
+
+    let backend = backend::open(path).expect("open repository");
+    let error = backend
+        .rebase_onto("main")
+        .expect_err("expected a conflict");
+    assert!(
+        error.to_string().contains("rebase"),
+        "unexpected error: {error}"
+    );
+    assert!(backend.rebase_in_progress().unwrap());
+    backend.abort_rebase().expect("abort rebase");
+    assert!(!backend.rebase_in_progress().unwrap());
+    assert_eq!(
+        git_ok(path, &["symbolic-ref", "--short", "HEAD"]),
+        "feature"
+    );
 }

@@ -187,16 +187,16 @@ impl GixBackend {
                 .strip_prefix('[')
                 .and_then(|track| track.strip_suffix(']'))
                 .unwrap_or_default();
-            if track == "gone" {
-                continue;
-            }
+            let gone = track == "gone";
             let mut ahead = 0;
             let mut behind = 0;
-            for direction in track.split(", ") {
-                if let Some(count) = direction.strip_prefix("ahead ") {
-                    ahead = count.parse().unwrap_or(0);
-                } else if let Some(count) = direction.strip_prefix("behind ") {
-                    behind = count.parse().unwrap_or(0);
+            if !gone {
+                for direction in track.split(", ") {
+                    if let Some(count) = direction.strip_prefix("ahead ") {
+                        ahead = count.parse().unwrap_or(0);
+                    } else if let Some(count) = direction.strip_prefix("behind ") {
+                        behind = count.parse().unwrap_or(0);
+                    }
                 }
             }
             tracking.push(BranchTracking {
@@ -210,6 +210,7 @@ impl GixBackend {
                     .to_string(),
                 ahead,
                 behind,
+                gone,
             });
         }
         Ok(tracking)
@@ -740,7 +741,17 @@ impl super::GitBackend for GixBackend {
     fn watch_paths(&self) -> Result<Vec<PathBuf>> {
         let git_dir = git_output_checked(&self.workdir, &["rev-parse", "--absolute-git-dir"])?;
         let git_dir = PathBuf::from(String::from_utf8_lossy(&git_dir.stdout).trim());
-        let mut paths = vec![self.workdir.clone(), git_dir];
+        // In a linked worktree `--absolute-git-dir` points at
+        // `.git/worktrees/<name>`, while branch refs and `packed-refs` live in
+        // the common directory. Watch both so external rebases are seen.
+        let common_dir = git_output_checked(&self.workdir, &["rev-parse", "--git-common-dir"])?;
+        let common_dir = PathBuf::from(String::from_utf8_lossy(&common_dir.stdout).trim());
+        let common_dir = if common_dir.is_absolute() {
+            common_dir
+        } else {
+            self.workdir.join(common_dir)
+        };
+        let mut paths = vec![self.workdir.clone(), git_dir, common_dir];
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -832,8 +843,54 @@ impl super::GitBackend for GixBackend {
     }
 
     fn graph_window(&self, skip: usize, limit: usize) -> Result<GraphWindow> {
-        let ids = self.ordered_commit_ids()?;
-        self.graph_page(&ids, skip, limit)
+        // Fetch one extra id to know whether older history remains, without
+        // walking the whole history up front (`git log --all` over every commit
+        // is what made large repositories slow to open).
+        let skip_arg = skip.to_string();
+        let max_arg = limit.saturating_add(1).to_string();
+        let (head_id, head_name) = self.head()?;
+        let mut args = vec!["log", "--all"];
+        // An unborn symbolic HEAD is not a valid revision argument to `git log`;
+        // `--all` is sufficient when there is no commit checked out.
+        if head_id.is_some() {
+            args.push("HEAD");
+        }
+        args.extend([
+            "--date-order",
+            "--skip",
+            skip_arg.as_str(),
+            "--max-count",
+            max_arg.as_str(),
+            "--format=%H",
+        ]);
+        let output = git_output_checked(&self.workdir, &args)?;
+        let mut ids = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let complete = ids.len() <= limit;
+        ids.truncate(limit);
+        let commits = self.decode_ordered_commits(&ids)?;
+        let (refs, branch_tracking, head_id, head_name) = if skip == 0 {
+            (
+                self.collect_refs()?,
+                self.collect_branch_tracking()?,
+                head_id,
+                head_name,
+            )
+        } else {
+            (Vec::new(), Vec::new(), None, None)
+        };
+        Ok(GraphWindow {
+            commits,
+            refs,
+            branch_tracking,
+            head_id,
+            head_name,
+            complete,
+        })
     }
 
     fn status(&self) -> Result<Vec<StatusEntry>> {
@@ -1702,6 +1759,49 @@ impl super::GitBackend for GixBackend {
             RebaseAction::Reword { .. } => Ok(RebaseOutcome::Completed),
             RebaseAction::Edit => self.rebase_stop_info(target),
         }
+    }
+
+    fn rebase_onto(&self, target: &str) -> Result<RebaseOutcome> {
+        if rebase_in_progress(&self.workdir)? {
+            anyhow::bail!("a Git rebase is already in progress");
+        }
+        let status = git_output_checked(&self.workdir, &["status", "--porcelain=v1", "-z"])?;
+        if !status.stdout.is_empty() {
+            anyhow::bail!("commit or stash working tree changes before rewriting history");
+        }
+        let head_ref = git_output(&self.workdir, &["symbolic-ref", "--quiet", "HEAD"])?;
+        if !head_ref.status.success() {
+            anyhow::bail!("rebase onto requires a checked-out branch");
+        }
+        let resolved = git_output(
+            &self.workdir,
+            &["rev-parse", "--verify", &format!("{target}^{{commit}}")],
+        )?;
+        if !resolved.status.success() {
+            anyhow::bail!("unknown revision: {target}");
+        }
+
+        let output = Command::new("git")
+            .args(["rebase", target])
+            .current_dir(&self.workdir)
+            .env("GIT_EDITOR", "true")
+            .output()
+            .context("rebase onto target")?;
+        if output.status.success() && !rebase_in_progress(&self.workdir)? {
+            return Ok(RebaseOutcome::Completed);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if rebase_in_progress(&self.workdir).unwrap_or(false) {
+            anyhow::bail!(
+                "rebase stopped before completing: {}",
+                if stderr.is_empty() {
+                    "resolve the conflicted files, then continue or abort"
+                } else {
+                    &stderr
+                }
+            );
+        }
+        anyhow::bail!("rebase failed: {stderr}");
     }
 
     fn prepare_rebase_plan(&self, target: &str) -> Result<RebasePlan> {

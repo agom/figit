@@ -350,6 +350,7 @@ impl App {
                     ("x", "revert"),
                     ("w / e", "reword / edit commit"),
                     ("i", "interactive rebase"),
+                    ("R", "rebase onto selected"),
                     ("F / +", "fetch / push"),
                 ],
             ),
@@ -1208,7 +1209,7 @@ impl App {
             Paragraph::new(lines)
                 .scroll((scroll, 0))
                 .wrap(Wrap { trim: false })
-                .block(self.panel_block("Commit Details", true)),
+                .block(self.panel_block("Commit Details", self.focus == Focus::Details)),
             area,
         );
         if visual_lines > viewport {
@@ -1465,6 +1466,7 @@ impl App {
             GraphAction::CheckoutBranch => "Checkout branch",
             GraphAction::CherryPick => "Cherry-pick",
             GraphAction::Revert => "Revert",
+            GraphAction::RebaseOnto => "Rebase onto",
             GraphAction::Discard => "Discard changes",
             GraphAction::Rename => "Rename branch",
             GraphAction::Delete => {
@@ -1548,6 +1550,9 @@ impl App {
                 ],
                 Color::LightCyan,
             ),
+            GraphAction::RebaseOnto => {
+                styled_key_hints(&[("Enter", "rebase"), ("Esc", "close")], Color::LightCyan)
+            }
             _ => styled_key_hints(
                 &[("Tab", "next"), ("Enter", "ok"), ("Esc", "close")],
                 Color::LightCyan,
@@ -1687,6 +1692,14 @@ impl App {
                 )
             }
             GraphAction::Checkout => "Checkout selected commit (detached HEAD)?".to_string(),
+            GraphAction::RebaseOnto => format!(
+                "Rebase {} onto {}?",
+                self.graph
+                    .head_name
+                    .as_deref()
+                    .unwrap_or("the checked-out branch"),
+                self.selected_commit_label()
+            ),
             GraphAction::Pull => "Pull from the tracked remote?".to_string(),
             GraphAction::Fetch | GraphAction::PushRemote => {
                 unreachable!("remote picker has a dedicated renderer")
@@ -2235,6 +2248,9 @@ impl App {
             };
             if r.kind == RefKind::LocalBranch {
                 if let Some(tracking) = self.tracking_by_branch.get(&r.name) {
+                    if tracking.gone {
+                        text.push_str(" ✗");
+                    }
                     if tracking.ahead > 0 {
                         text.push_str(&format!(" ↑{}", tracking.ahead));
                     }

@@ -92,8 +92,11 @@ figit --version
 | `x` | Revert commit |
 | `w` / `e` | Reword / edit commit (edit pauses an interactive rebase) |
 | `i` | Interactive rebase plan |
+| `R` | Rebase the checked-out branch onto the selected commit or ref |
 | `F` | Fetch |
 | `+` | Push the selected branch, or the selected tag when the commit has no branch |
+
+Local branches whose configured upstream no longer exists are marked with `✗`.
 
 ### Staging and diff
 

@@ -713,12 +713,32 @@ fn local_branch_label_shows_ahead_and_behind_counts() {
         upstream: "origin/main".into(),
         ahead: 3,
         behind: 2,
+        gone: false,
     });
     app.rebuild_graph_indexes();
     let row = app.render_row(&app.rows[0], 100).to_string();
     assert!(
         row.contains("main ↑3 ↓2"),
         "tracking counts missing from branch label: {row}"
+    );
+}
+
+#[test]
+fn local_branch_with_a_gone_upstream_is_marked() {
+    let mut app = App::new(synthetic_graph(), vec![], None);
+    app.bg = Some(Color::Rgb(0, 0, 0));
+    app.graph.branch_tracking.push(BranchTracking {
+        branch: "main".into(),
+        upstream: "origin/main".into(),
+        ahead: 0,
+        behind: 0,
+        gone: true,
+    });
+    app.rebuild_graph_indexes();
+    let row = app.render_row(&app.rows[0], 100).to_string();
+    assert!(
+        row.contains("main ✗"),
+        "gone upstream marker missing from branch label: {row}"
     );
 }
 
@@ -1443,6 +1463,10 @@ fn parses_osc11_background() {
         ),
         ("\x1b]11;#1a2b3c\x1b\\", Color::Rgb(0x1a, 0x2b, 0x3c)),
         ("\x1b]11;rgb:0a/0b/0c\x1b\\", Color::Rgb(0x0a, 0x0b, 0x0c)),
+        (
+            "\x1b]11;rgb:1010/2020/3030\x07",
+            Color::Rgb(0x10, 0x20, 0x30),
+        ),
     ];
     for (input, expected) in cases {
         assert_eq!(

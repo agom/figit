@@ -445,6 +445,24 @@ impl App {
             .map(|row| self.graph.commits[row.commit_index].id.clone())
     }
 
+    /// Human-readable label for the selected commit: a branch/tag name when one
+    /// points at it, otherwise the short id.
+    pub(super) fn selected_commit_label(&self) -> String {
+        let Some(id) = self.selected_commit_id() else {
+            return String::new();
+        };
+        let short = id.chars().take(7).collect::<String>();
+        let reference = self.graph_display_refs.get(&id).and_then(|refs| {
+            refs.iter()
+                .find(|reference| matches!(reference.kind, RefKind::LocalBranch | RefKind::Tag))
+                .or_else(|| refs.first())
+        });
+        match reference {
+            Some(reference) => format!("{} ({short})", reference.name),
+            None => short,
+        }
+    }
+
     pub(super) fn selected_rebase_commit(&self) -> Option<Commit> {
         self.graph.head_name.as_ref()?;
         let id = self.selected_commit_id()?;
@@ -1166,6 +1184,28 @@ impl App {
         let Some(backend) = self.backend.as_ref() else {
             return;
         };
+        if action == GraphAction::RebaseOnto {
+            let result = backend.rebase_onto(target.as_deref().unwrap());
+            let in_progress = backend.rebase_in_progress().unwrap_or(false);
+            match result {
+                Ok(outcome) => {
+                    self.graph_action = None;
+                    self.graph_action_return_focus = None;
+                    self.apply_rebase_outcome(outcome);
+                }
+                Err(error) => {
+                    if in_progress {
+                        self.graph_action = None;
+                        self.graph_action_return_focus = None;
+                        self.rebase_active = true;
+                        self.rebase_paused = true;
+                        self.reload_after_commit();
+                    }
+                    self.show_rebase_error(error.to_string());
+                }
+            }
+            return;
+        }
         let push_after_tag = action == GraphAction::Tag && self.push_after_create;
         let tag_name = self.graph_action_input.clone();
         let tag_remote = if push_after_tag {
@@ -1189,6 +1229,7 @@ impl App {
             ),
             GraphAction::CherryPick => backend.cherry_pick(target.as_deref().unwrap()),
             GraphAction::Revert => backend.revert(target.as_deref().unwrap()),
+            GraphAction::RebaseOnto => unreachable!("rebase onto is handled before dispatch"),
             GraphAction::Rename => self.selected_local_branch().map_or_else(
                 || Err(anyhow::anyhow!("no local branch at selected commit")),
                 |old| backend.rename_branch(&old, &self.graph_action_input, self.remote_action),
@@ -1504,8 +1545,17 @@ impl App {
         while self.watch_rx.try_recv().is_ok() {
             watched = true;
         }
-        if watched && !self.ignoring_watcher() {
-            self.refresh_deadline = Some(Instant::now() + Duration::from_millis(300));
+        if watched {
+            // Events produced by our own git writes are coalesced into one
+            // refresh once the quiet window ends; external changes that land
+            // inside the window are deferred rather than dropped.
+            let delay = match self.ignore_watch_until {
+                Some(until) if Instant::now() < until => {
+                    until.saturating_duration_since(Instant::now()) + Duration::from_millis(50)
+                }
+                _ => Duration::from_millis(300),
+            };
+            self.refresh_deadline = Some(Instant::now() + delay);
         }
 
         while let Ok(completion) = self.refresh_rx.try_recv() {
@@ -1534,6 +1584,9 @@ impl App {
                         } else {
                             Focus::Graph
                         };
+                        if !initial_status_has_changes {
+                            self.select_head_commit();
+                        }
                     }
                 }
                 Err(error) if initial_load => {
@@ -1635,13 +1688,12 @@ impl App {
         };
         let skip = self.graph.commits.len();
         let generation = self.graph_generation;
-        let history_ids = Arc::clone(&self.history_ids);
         let sender = self.graph_page_tx.clone();
         self.graph_page_in_progress = true;
         thread::spawn(move || {
             let result = (|| -> anyhow::Result<GraphWindow> {
                 let backend = crate::backend::open(&path)?;
-                backend.graph_page(&history_ids, skip, graph_page_size())
+                backend.graph_window(skip, graph_page_size())
             })()
             .map_err(|error| format!("{error:#}"));
             let _ = sender.send(GraphPageCompletion {
@@ -1746,10 +1798,25 @@ impl App {
         });
     }
 
+    /// Select the checked-out commit so the graph opens where work is happening.
+    fn select_head_commit(&mut self) {
+        let Some(head) = self.graph.head_id.as_deref() else {
+            return;
+        };
+        let local_offset = usize::from(!self.local_status.is_empty());
+        let Some(row) = self
+            .rows
+            .iter()
+            .position(|row| self.graph.commits[row.commit_index].id == head)
+        else {
+            return;
+        };
+        self.select_graph_index(row + local_offset);
+    }
+
     pub(super) fn reload_external_snapshot(&mut self, snapshot: RepositorySnapshot) {
         let RepositorySnapshot {
             graph,
-            history_ids,
             status: local_status,
             rows,
             max_lanes,
@@ -1771,7 +1838,6 @@ impl App {
             return;
         };
         self.graph_generation = self.graph_generation.wrapping_add(1);
-        self.history_ids = Arc::new(history_ids);
         self.layout_engine = layout_engine;
         self.graph_complete = complete;
         self.graph_page_in_progress = false;
@@ -1810,13 +1876,22 @@ impl App {
         self.rebase_active = backend.rebase_in_progress().unwrap_or(self.rebase_active);
 
         let local_offset = usize::from(!self.local_status.is_empty());
-        self.selected_graph = selected_commit
-            .as_ref()
-            .and_then(|id| {
-                self.rows
-                    .iter()
-                    .position(|row| self.graph.commits[row.commit_index].id == *id)
-            })
+        let selected_row = selected_commit.as_ref().and_then(|id| {
+            self.rows
+                .iter()
+                .position(|row| self.graph.commits[row.commit_index].id == *id)
+                .or_else(|| {
+                    // An external rewrite (a rebase, amend, ...) can remove the
+                    // selected commit. Follow HEAD instead of landing on an
+                    // arbitrary row.
+                    self.graph.head_id.as_deref().and_then(|head| {
+                        self.rows
+                            .iter()
+                            .position(|row| self.graph.commits[row.commit_index].id == head)
+                    })
+                })
+        });
+        self.selected_graph = selected_row
             .map(|row| row + local_offset)
             .unwrap_or_else(|| {
                 old_selected_graph.min(self.rows.len().saturating_sub(1) + local_offset)
