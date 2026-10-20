@@ -1,0 +1,18 @@
+#!/bin/sh
+# figit installer bootstrap: always runs the latest published release.
+set -eu
+
+url="https://github.com/agom/figit/releases/latest/download/figit-installer.sh"
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT INT TERM
+
+if command -v curl >/dev/null 2>&1; then
+    curl -sSfL "$url" -o "$tmp"
+elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp" "$url"
+else
+    echo "figit: install requires curl or wget" >&2
+    exit 1
+fi
+
+sh "$tmp"

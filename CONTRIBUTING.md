@@ -35,6 +35,7 @@ src/
 ├── backend/   GitBackend trait + GixBackend (gix reads, git CLI writes)
 ├── graph/     lane assignment + glyph layout (pure, unit-tested)
 └── ui/        ratatui renderer, event loop, workflows
+site/          figit.dev static site, deployed by Pages
 ```
 
 Two rules keep the module boundaries useful:
@@ -71,6 +72,13 @@ Use `cargo fmt --all` to apply formatting, and commit `Cargo.lock` when
 dependencies change (CI builds with `--locked`). The PTY tests each spawn a real
 terminal and a `git` process, so the harness caps concurrency
 (`.cargo/config.toml`) and CI serializes them with `--test-threads=1`.
+
+## Website
+
+`figit.dev` is the static site in `site/`. `.github/workflows/pages.yml` deploys
+it when `site/` changes and after each successful release, filling the version
+badge from the latest release tag. Preview it locally with
+`python3 -m http.server -d site`.
 
 ## Tests
 
