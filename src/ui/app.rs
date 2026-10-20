@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1433,6 +1432,7 @@ fn graph_hint_lines(width: usize, focused: bool, on_current_branch: bool) -> Vec
             ("w", "reword"),
             ("e", "edit"),
             ("i", "rebase"),
+            ("R", "onto"),
         ],
     );
     builder.append_group(
@@ -1496,7 +1496,6 @@ pub struct App {
     graph: GraphModel,
     graph_display_refs: HashMap<String, Vec<DisplayRef>>,
     tracking_by_branch: HashMap<String, BranchTracking>,
-    history_ids: Arc<Vec<String>>,
     current_branch_ids: HashSet<String>,
     status: Vec<StatusEntry>,
     backend: Option<Box<dyn GitBackend>>,
@@ -1763,6 +1762,7 @@ enum GraphAction {
     CheckoutBranch,
     CherryPick,
     Revert,
+    RebaseOnto,
     Discard,
     Rename,
     Delete,
@@ -1848,7 +1848,6 @@ struct GraphPageCompletion {
 
 struct RepositorySnapshot {
     graph: GraphModel,
-    history_ids: Vec<String>,
     status: Vec<StatusEntry>,
     rows: Vec<GraphRow>,
     max_lanes: usize,
@@ -1991,19 +1990,10 @@ fn load_repository_snapshot(path: &Path) -> Result<RepositorySnapshot> {
     let backend = crate::backend::open(path)?;
     let profile = std::env::var_os("FIGIT_PROFILE_STARTUP").is_some();
     let phase_started = Instant::now();
-    let history_ids = backend.ordered_history_ids()?;
+    let window = backend.graph_window(0, graph_page_size())?;
     if profile {
         eprintln!(
-            "profile history ids: {:.3}s ({} commits)",
-            phase_started.elapsed().as_secs_f64(),
-            history_ids.len()
-        );
-    }
-    let phase_started = Instant::now();
-    let window = backend.graph_page(&history_ids, 0, graph_page_size())?;
-    if profile {
-        eprintln!(
-            "profile initial page decode: {:.3}s ({} commits)",
+            "profile initial page: {:.3}s ({} commits)",
             phase_started.elapsed().as_secs_f64(),
             window.commits.len()
         );
@@ -2050,7 +2040,6 @@ fn load_repository_snapshot(path: &Path) -> Result<RepositorySnapshot> {
             head_id: window.head_id,
             head_name: window.head_name,
         },
-        history_ids,
         status,
         rows,
         max_lanes,
@@ -2379,13 +2368,6 @@ impl App {
         }
         let max_lanes = layout::max_lanes(&rows);
         let has_local_changes = !status.is_empty();
-        let history_ids = Arc::new(
-            graph
-                .commits
-                .iter()
-                .map(|commit| commit.id.clone())
-                .collect(),
-        );
         let repository_path = backend
             .as_ref()
             .map(|backend| backend.working_directory().to_path_buf());
@@ -2412,7 +2394,6 @@ impl App {
             graph,
             graph_display_refs: HashMap::new(),
             tracking_by_branch: HashMap::new(),
-            history_ids,
             current_branch_ids: HashSet::new(),
             status: status.clone(),
             backend,
@@ -3000,11 +2981,6 @@ impl App {
         self.refresh_generation = self.refresh_generation.wrapping_add(1);
     }
 
-    fn ignoring_watcher(&self) -> bool {
-        self.ignore_watch_until
-            .is_some_and(|until| Instant::now() < until)
-    }
-
     fn refresh_status(&mut self) {
         self.note_internal_change();
         if let Some(backend) = self.backend.as_ref() {
@@ -3095,7 +3071,6 @@ impl App {
         self.note_internal_change();
         let RepositorySnapshot {
             graph,
-            history_ids,
             status,
             rows,
             max_lanes,
@@ -3106,7 +3081,6 @@ impl App {
             return;
         };
         self.graph_generation = self.graph_generation.wrapping_add(1);
-        self.history_ids = Arc::new(history_ids);
         self.layout_engine = layout_engine;
         self.graph_complete = complete;
         self.graph_page_in_progress = false;
@@ -3215,11 +3189,13 @@ impl App {
                 let Ok(event) = event else { return };
                 // `git status` refreshes `.git/index`; reacting to that write
                 // would trigger another refresh that rewrites the index again,
-                // rebuilding the whole graph in a tight loop.
-                if event
-                    .paths
-                    .iter()
-                    .all(|path| is_ignored_watch_path(path, git_dir.as_deref()))
+                // rebuilding the whole graph in a tight loop. Events without a
+                // path must still be treated as changes.
+                if !event.paths.is_empty()
+                    && event
+                        .paths
+                        .iter()
+                        .all(|path| is_ignored_watch_path(path, git_dir.as_deref()))
                 {
                     return;
                 }
@@ -3763,8 +3739,9 @@ impl App {
                 }
                 self.focus = match self.focus {
                     Focus::Status => Focus::Graph,
-                    // The commit-details pane is always highlighted for the
-                    // selected commit, so Tab skips straight to the diff.
+                    // The details pane is focusable so long commit messages can
+                    // be scrolled; skip it when the local-changes row is selected.
+                    Focus::Graph if self.historical_commit.is_some() => Focus::Details,
                     Focus::Graph => Focus::Diff,
                     Focus::Details => Focus::Diff,
                     Focus::Diff => {
@@ -3822,6 +3799,9 @@ impl App {
                 self.open_edit_confirmation()
             }
             KeyCode::Char('i') if self.focus == Focus::Graph => self.open_rebase_plan(),
+            KeyCode::Char('R') if self.focus == Focus::Graph => {
+                self.open_graph_action(GraphAction::RebaseOnto)
+            }
             KeyCode::Char('o')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
@@ -4454,7 +4434,9 @@ fn detect_terminal_colors() -> (Option<Color>, TerminalAnsiPalette) {
         }
         let mut acc = Vec::new();
         let mut buf = [0u8; 256];
-        let deadline = Instant::now() + Duration::from_millis(800);
+        // Terminals may answer an OSC query with ST (`ESC \\`) or BEL. Cap the
+        // wait low: a non-responding terminal must not delay startup.
+        let deadline = Instant::now() + Duration::from_millis(150);
         loop {
             if Instant::now() >= deadline {
                 break;
@@ -4463,7 +4445,7 @@ fn detect_terminal_colors() -> (Option<Color>, TerminalAnsiPalette) {
             if n < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.kind() == std::io::ErrorKind::WouldBlock {
-                    std::thread::sleep(Duration::from_millis(5));
+                    std::thread::sleep(Duration::from_millis(2));
                     continue;
                 }
                 break;
@@ -4472,7 +4454,7 @@ fn detect_terminal_colors() -> (Option<Color>, TerminalAnsiPalette) {
                 break;
             }
             acc.extend_from_slice(&buf[..n as usize]);
-            if acc.windows(2).any(|w| w == b"\x1b\\") {
+            if acc.windows(2).any(|w| w == b"\x1b\\") || acc.contains(&0x07) {
                 break;
             }
         }
@@ -4487,7 +4469,7 @@ fn detect_terminal_colors() -> (Option<Color>, TerminalAnsiPalette) {
             }
             return Some((background, [None; 16]));
         }
-        let palette_deadline = Instant::now() + Duration::from_millis(120);
+        let palette_deadline = Instant::now() + Duration::from_millis(60);
         while Instant::now() < palette_deadline {
             let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
             if n < 0 {
@@ -4528,7 +4510,10 @@ pub fn parse_osc11(acc: &[u8]) -> Option<Color> {
     const PREFIX: &str = "\x1b]11;";
     let start = s.find(PREFIX)? + PREFIX.len();
     let rest = &s[start..];
-    let end = rest.find("\x1b\\").unwrap_or(rest.len());
+    let end = rest
+        .find("\x1b\\")
+        .or_else(|| rest.find('\x07'))
+        .unwrap_or(rest.len());
     let payload = rest[..end].trim();
 
     parse_rgb_color(payload)

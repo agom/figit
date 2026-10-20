@@ -65,6 +65,7 @@ pub trait GitBackend {
         fixup: Option<&str>,
     ) -> anyhow::Result<()>;
     fn rebase_commit(&self, target: &str, action: &RebaseAction) -> anyhow::Result<RebaseOutcome>;
+    fn rebase_onto(&self, target: &str) -> anyhow::Result<RebaseOutcome>;
     fn prepare_rebase_plan(&self, target: &str) -> anyhow::Result<RebasePlan>;
     fn execute_rebase_plan(&self, plan: &RebasePlan) -> anyhow::Result<RebaseOutcome>;
     fn rebase_in_progress(&self) -> anyhow::Result<bool>;

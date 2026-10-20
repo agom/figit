@@ -272,6 +272,8 @@ pub struct BranchTracking {
     pub upstream: String,
     pub ahead: usize,
     pub behind: usize,
+    /// True when the configured upstream no longer exists on the remote.
+    pub gone: bool,
 }
 
 impl GraphModel {

@@ -1417,6 +1417,9 @@ fn plus_pushes_the_selected_non_head_branch_and_returns_to_graph() {
     let feature_tip = git_ok(repository.path(), &["rev-parse", "feature"]);
 
     let mut tui = Tui::launch(repository.path());
+    tui.wait_for("feature tip");
+    // Startup selects HEAD (main); move up to the feature branch tip.
+    tui.send(b"\x1b[A");
     tui.wait_for_text_background("feature tip", vt100::Color::Rgb(45, 50, 65));
     tui.send(b"+");
     tui.wait_for("Select push mode");
@@ -1449,6 +1452,9 @@ fn deleting_selected_branch_keeps_graph_focus_and_selects_a_remaining_commit() {
     git_ok(repository.path(), &["checkout", "--quiet", "main"]);
 
     let mut tui = Tui::launch(repository.path());
+    tui.wait_for("ephemeral tip");
+    // Startup selects HEAD (main); move up to the ephemeral branch tip.
+    tui.send(b"\x1b[A");
     tui.wait_for_text_background("ephemeral tip", vt100::Color::Rgb(45, 50, 65));
     tui.send(b"d");
     tui.wait_for("Delete branch ephemeral?");
@@ -1489,9 +1495,12 @@ fn external_worktree_and_commit_changes_refresh_the_tui() {
     let repository = init_linear_repository();
     let mut tui = Tui::launch(repository.path());
     tui.wait_for("3 commits");
-    tui.wait_for("Unstaged (0)");
+    tui.wait_for("Commit Details");
 
     std::fs::write(repository.path().join("file.txt"), "external edit\n").unwrap();
+    // The local-changes row appears above the selected HEAD commit.
+    tui.wait_for("Local changes");
+    tui.send(b"\x1b[A");
     tui.wait_for("Unstaged (1)");
     tui.wait_for("file.txt");
     assert!(tui.contents().contains("external edit"));
@@ -1505,6 +1514,109 @@ fn external_worktree_and_commit_changes_refresh_the_tui() {
     tui.wait_for("4 commits");
     tui.wait_for("Unstaged (0)");
     tui.quit();
+}
+
+#[test]
+fn external_rebase_refreshes_the_graph() {
+    let repository = init_linear_repository();
+    let path = repository.path();
+    git_ok(path, &["checkout", "--quiet", "-b", "feature", "HEAD~1"]);
+    std::fs::write(path.join("feature.txt"), "feature\n").unwrap();
+    git_ok(path, &["add", "feature.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "feature work"]);
+    let old_feature = git_ok(path, &["rev-parse", "HEAD"]);
+    git_ok(path, &["checkout", "--quiet", "main"]);
+
+    let mut tui = Tui::launch(path);
+    tui.wait_for("feature work");
+    tui.wait_for(&old_feature[..7]);
+
+    // An external agent rewrites the branch while the TUI is running.
+    git_ok(path, &["rebase", "--quiet", "main", "feature"]);
+    let new_feature = git_ok(path, &["rev-parse", "feature"]);
+    assert_ne!(old_feature, new_feature);
+
+    tui.wait_for(&new_feature[..7]);
+    tui.wait_for("feature work");
+    tui.quit();
+}
+
+#[test]
+fn external_rebase_refreshes_a_tui_running_in_a_linked_worktree() {
+    let repository = init_linear_repository();
+    let path = repository.path();
+    let linked_parent = TempDir::new().expect("linked worktree parent");
+    let linked = linked_parent.path().join("linked");
+    git_ok(
+        path,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "linked",
+            linked.to_str().unwrap(),
+            "HEAD~1",
+        ],
+    );
+
+    let mut tui = Tui::launch(&linked);
+    tui.wait_for("tip commit");
+
+    // Rewriting a ref in the main worktree only touches the common git dir.
+    std::fs::write(path.join("file.txt"), "rewritten\n").unwrap();
+    git_ok(path, &["commit", "--quiet", "-am", "rewritten main"]);
+
+    tui.wait_for("rewritten main");
+    tui.quit();
+}
+
+#[test]
+fn rebase_onto_popup_rewrites_the_current_branch() {
+    let repository = init_linear_repository();
+    let path = repository.path();
+    git_ok(path, &["checkout", "--quiet", "-b", "feature", "HEAD~1"]);
+    std::fs::write(path.join("feature.txt"), "feature\n").unwrap();
+    git_ok(path, &["add", "feature.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "feature work"]);
+    let old_feature = git_ok(path, &["rev-parse", "HEAD"]);
+
+    let mut tui = Tui::launch(path);
+    tui.wait_for("feature work");
+
+    // Pick the main tip commit as the new base via search.
+    tui.send(b"/");
+    tui.wait_for("Search /");
+    tui.send(b"tip commit");
+    tui.send(b"\r");
+    tui.wait_for("1 match");
+    tui.send(b"\r");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Search /");
+
+    tui.send(b"R");
+    tui.wait_for("Rebase onto");
+    tui.send(b"\r");
+
+    let new_feature = wait_for_branch_change(path, "feature", &old_feature);
+    tui.wait_for(&new_feature[..7]);
+    assert_eq!(
+        git_ok(path, &["rev-parse", "HEAD~1"]),
+        git_ok(path, &["rev-parse", "main"])
+    );
+    tui.quit();
+}
+
+fn wait_for_branch_change(path: &Path, branch: &str, old: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let current = git_ok(path, &["rev-parse", branch]);
+        if current != old {
+            return current;
+        }
+        assert!(Instant::now() < deadline, "branch {branch} was not rebased");
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -2522,7 +2634,9 @@ fn tab_reaches_the_read_only_commit_diff_without_staging_hints() {
     tui.wait_for("Commit Details");
     tui.wait_for("Diff — ");
 
-    // Tab now cycles Graph -> Diff (the commit details pane is always shown).
+    // Tab now cycles Graph -> Commit Details -> Diff.
+    tui.send(b"\t");
+    tui.wait_for_title_focus("Commit Details");
     tui.send(b"\t");
     tui.wait_for_title_focus("Diff");
 
@@ -2546,8 +2660,10 @@ fn bracket_keys_jump_between_hunks_in_a_read_only_commit_diff() {
     tui.wait_for("Diff — file.txt");
     tui.wait_for("line 10 changed");
 
-    // Tab straight to the diff and step through hunks with `[`/`]`, even though
-    // there is no staging selection.
+    // Tab through the details pane to the diff and step through hunks with
+    // `[`/`]`, even though there is no staging selection.
+    tui.send(b"\t");
+    tui.wait_for_title_focus("Commit Details");
     tui.send(b"\t");
     tui.wait_for_title_focus("Diff");
     tui.send(b"]");
@@ -2570,6 +2686,8 @@ fn arrow_keys_pan_the_diff_horizontally() {
     tui.send(b"\x1b[A");
     tui.wait_for("Diff — file.txt");
     tui.wait_for("ZZSTARTZZ");
+    tui.send(b"\t");
+    tui.wait_for_title_focus("Commit Details");
     tui.send(b"\t");
     tui.wait_for_title_focus("Diff");
 
