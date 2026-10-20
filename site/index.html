@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>figit: a git tui</title>
+<meta name="description" content="A terminal Git client built around the commit graph.">
+<link rel="icon" href="figit.svg" type="image/svg+xml">
+<style>
+  :root {
+    --paper: #ebd6c3;
+    --card: #f6e9dd;
+    --ink: #3a1f3f;
+    --plum: #53295b;
+    --red: #f35333;
+    --orange: #e98515;
+    --sage: #599283;
+    --olive: #6f8935;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--paper);
+    display: grid;
+    place-items: center;
+    padding: 2.5rem 1.5rem;
+  }
+  main { width: min(960px, 100%); text-align: center; }
+  .logo {
+    width: 128px; height: 128px;
+    display: block; margin: 0 auto 1.25rem;
+    filter: drop-shadow(0 8px 22px rgba(83, 41, 91, 0.18));
+  }
+  h1 {
+    font-size: clamp(2.5rem, 8vw, 4rem);
+    line-height: 1;
+    letter-spacing: -0.03em;
+    margin: 0;
+    color: var(--plum);
+  }
+  .tagline {
+    font-size: 1.1rem;
+    line-height: 1.55;
+    margin: 0.85rem auto 0;
+    max-width: 34ch;
+    opacity: 0.82;
+  }
+  .pill {
+    display: inline-block;
+    margin-top: 1.5rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 999px;
+    background: var(--sage);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .install {
+    margin: 2rem auto 0;
+    width: fit-content;
+    max-width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 1rem 1.15rem;
+    border-radius: 12px;
+    background: var(--ink);
+    color: var(--card);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
+    box-shadow: 0 12px 34px rgba(58, 31, 63, 0.2);
+    text-align: left;
+  }
+  .install .prompt { color: var(--sage); user-select: none; }
+  .install code { min-width: 0; overflow-x: auto; white-space: nowrap; }
+  .copy {
+    flex: none;
+    border: 1px solid rgba(246, 233, 221, 0.28);
+    background: transparent;
+    color: var(--card);
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+  .copy:hover { background: rgba(246, 233, 221, 0.12); border-color: rgba(246, 233, 221, 0.5); }
+  .copy.copied { background: var(--sage); border-color: var(--sage); color: #fff; }
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-top: 2rem;
+  }
+  a {
+    color: var(--plum);
+    text-decoration: none;
+    padding-bottom: 2px;
+    border-bottom: 2px solid transparent;
+    transition: border-color 0.15s ease;
+  }
+  a:hover { border-color: var(--orange); }
+  .shot-link { display: block; margin-top: 3rem; }
+  .shot {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 12px;
+    border: 1px solid rgba(83, 41, 91, 0.18);
+    box-shadow: 0 20px 55px rgba(58, 31, 63, 0.22);
+  }
+  footer { margin-top: 3rem; font-size: 0.8rem; opacity: 0.55; }
+  .shapes { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: -1; }
+  .shapes span { position: absolute; border-radius: 50%; opacity: 0.13; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #2a152e; color: var(--card); }
+    h1, a { color: var(--paper); }
+    .install { background: #1c0e20; }
+    .shot { border-color: rgba(246, 233, 221, 0.12); box-shadow: 0 20px 55px rgba(0, 0, 0, 0.45); }
+    footer { opacity: 0.5; }
+    .shapes span { opacity: 0.08; }
+  }
+</style>
+</head>
+<body>
+  <div class="shapes" aria-hidden="true">
+    <span style="width: 440px; height: 440px; background: var(--red); top: -170px; left: -130px;"></span>
+    <span style="width: 380px; height: 380px; background: var(--orange); bottom: -150px; right: -90px;"></span>
+    <span style="width: 300px; height: 300px; background: var(--sage); bottom: -170px; left: 16%;"></span>
+  </div>
+
+  <main>
+    <img class="logo" src="figit.svg" alt="figit logo" width="128" height="128">
+    <h1>figit</h1>
+    <p class="tagline">A terminal Git client built around the commit graph.</p>
+    <span class="pill">__FIGIT_VERSION__</span>
+
+    <div class="install" role="group" aria-label="Install command">
+      <span class="prompt" aria-hidden="true">$</span>
+      <code id="install-command">curl -sSfL https://figit.dev/install | sh</code>
+      <button class="copy" type="button"
+        data-copy="curl -sSfL https://figit.dev/install | sh"
+        aria-label="Copy install command">Copy</button>
+    </div>
+
+    <nav class="links">
+      <a href="https://github.com/agom/figit">GitHub</a>
+      <a href="https://github.com/agom/figit/releases">Releases</a>
+      <a href="https://github.com/agom/figit/blob/main/CONTRIBUTING.md">Contributing</a>
+    </nav>
+
+    <a class="shot-link" href="screenshot.png" target="_blank" rel="noopener">
+      <img class="shot" src="screenshot.png"
+        alt="figit showing the commit graph, staging area, and syntax-highlighted diff"
+        width="2064" height="1368">
+    </a>
+
+    <footer>MIT licensed · built with Rust, ratatui &amp; gix</footer>
+  </main>
+  <script>
+    (() => {
+      const button = document.querySelector('.copy');
+      if (!button) return;
+      const command = button.dataset.copy || '';
+      button.addEventListener('click', async () => {
+        let copied = false;
+        try {
+          await navigator.clipboard.writeText(command);
+          copied = true;
+        } catch {}
+        if (!copied) {
+          const area = document.createElement('textarea');
+          area.value = command;
+          area.setAttribute('readonly', '');
+          area.style.position = 'fixed';
+          area.style.opacity = '0';
+          document.body.appendChild(area);
+          area.select();
+          try { copied = document.execCommand('copy'); } catch {}
+          area.remove();
+        }
+        button.textContent = copied ? 'Copied!' : 'Ctrl+C';
+        button.classList.toggle('copied', copied);
+        setTimeout(() => {
+          button.textContent = 'Copy';
+          button.classList.remove('copied');
+        }, 1600);
+      });
+    })();
+  </script>
+</body>
+</html>
