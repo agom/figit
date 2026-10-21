@@ -20,13 +20,19 @@ KEYS:
 ";
 
 fn main() -> ExitCode {
-    match run() {
+    figit::profile::start();
+    let result = run();
+    let exit = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("figit: {error:#}");
             ExitCode::FAILURE
         }
+    };
+    if figit::profile::enabled() {
+        eprintln!("\n{}", figit::profile::report());
     }
+    exit
 }
 
 fn run() -> anyhow::Result<()> {
@@ -53,9 +59,11 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    figit::profile::mark("args parsed");
     let path = path.unwrap_or_else(|| std::env::current_dir().expect("cannot resolve current dir"));
 
     let backend = figit::backend::open(&path)?;
+    figit::profile::mark("backend opened");
     let mut app = figit::ui::app::App::loading(backend);
     app.run()
 }

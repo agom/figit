@@ -4,7 +4,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use similar::{DiffTag, TextDiff};
@@ -758,50 +757,16 @@ impl super::GitBackend for GixBackend {
     }
 
     fn build_graph(&self) -> Result<GraphModel> {
-        let profile = std::env::var_os("FIGIT_PROFILE_STARTUP").is_some();
-        let total_started = Instant::now();
-        let phase_started = Instant::now();
         let refs = self.collect_refs()?;
-        if profile {
-            eprintln!(
-                "profile collect_refs: {:.3}s ({} refs)",
-                phase_started.elapsed().as_secs_f64(),
-                refs.len()
-            );
-        }
-        let phase_started = Instant::now();
+        crate::profile::mark("build_graph: refs");
         let branch_tracking = self.collect_branch_tracking()?;
-        if profile {
-            eprintln!(
-                "profile branch_tracking: {:.3}s ({} branches)",
-                phase_started.elapsed().as_secs_f64(),
-                branch_tracking.len()
-            );
-        }
+        crate::profile::mark("build_graph: tracking");
         let (head_id, head_name) = self.head()?;
 
-        let phase_started = Instant::now();
         let ids = self.ordered_commit_ids()?;
-        if profile {
-            eprintln!(
-                "profile git log ids: {:.3}s ({} commits)",
-                phase_started.elapsed().as_secs_f64(),
-                ids.len()
-            );
-        }
-        let phase_started = Instant::now();
+        crate::profile::mark("build_graph: git log");
         let commits = self.decode_ordered_commits(&ids)?;
-        if profile {
-            eprintln!(
-                "profile commit decode: {:.3}s ({} commits)",
-                phase_started.elapsed().as_secs_f64(),
-                commits.len()
-            );
-            eprintln!(
-                "profile build_graph total: {:.3}s",
-                total_started.elapsed().as_secs_f64()
-            );
-        }
+        crate::profile::mark("build_graph: decode");
 
         Ok(GraphModel {
             commits,

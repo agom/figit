@@ -1988,26 +1988,11 @@ fn record_update_check() {
 
 fn load_repository_snapshot(path: &Path) -> Result<RepositorySnapshot> {
     let backend = crate::backend::open(path)?;
-    let profile = std::env::var_os("FIGIT_PROFILE_STARTUP").is_some();
-    let phase_started = Instant::now();
+    crate::profile::mark("snapshot: backend");
     let window = backend.graph_window(0, graph_page_size())?;
-    if profile {
-        eprintln!(
-            "profile initial page: {:.3}s ({} commits)",
-            phase_started.elapsed().as_secs_f64(),
-            window.commits.len()
-        );
-    }
-    let phase_started = Instant::now();
+    crate::profile::mark("snapshot: graph page");
     let status = backend.status()?;
-    if profile {
-        eprintln!(
-            "profile initial status: {:.3}s ({} paths)",
-            phase_started.elapsed().as_secs_f64(),
-            status.len()
-        );
-    }
-    let phase_started = Instant::now();
+    crate::profile::mark("snapshot: status");
     let mut layout = layout::Layout::new();
     let rows = if window.complete {
         let known: HashSet<&str> = window
@@ -2020,18 +2005,7 @@ fn load_repository_snapshot(path: &Path) -> Result<RepositorySnapshot> {
         layout.extend(&window.commits, None)
     };
     let max_lanes = layout::max_lanes(&rows);
-    if profile {
-        eprintln!(
-            "profile initial layout: {:.3}s ({} rows)",
-            phase_started.elapsed().as_secs_f64(),
-            rows.len()
-        );
-        eprintln!(
-            "profile graph page: {} commits (complete={})",
-            window.commits.len(),
-            window.complete
-        );
-    }
+    crate::profile::mark("snapshot: layout");
     Ok(RepositorySnapshot {
         graph: GraphModel {
             commits: window.commits,
@@ -2355,17 +2329,7 @@ impl App {
         status: Vec<StatusEntry>,
         backend: Option<Box<dyn GitBackend>>,
     ) -> Self {
-        let profile = std::env::var_os("FIGIT_PROFILE_STARTUP").is_some();
-        let init_started = Instant::now();
-        let layout_started = Instant::now();
         let rows = layout::layout(&graph);
-        if profile {
-            eprintln!(
-                "profile graph layout: {:.3}s ({} rows)",
-                layout_started.elapsed().as_secs_f64(),
-                rows.len()
-            );
-        }
         let max_lanes = layout::max_lanes(&rows);
         let has_local_changes = !status.is_empty();
         let repository_path = backend
@@ -2541,19 +2505,8 @@ impl App {
         if !app.status.is_empty() {
             app.selected_statuses.insert(app.selected_status);
         }
-        let refresh_started = Instant::now();
         app.refresh_diff();
         app.refresh_diff_stats();
-        if profile {
-            eprintln!(
-                "profile App::new refresh_diff+stats: {:.3}s",
-                refresh_started.elapsed().as_secs_f64()
-            );
-            eprintln!(
-                "profile App::new total: {:.3}s",
-                init_started.elapsed().as_secs_f64()
-            );
-        }
         app
     }
 
@@ -3146,10 +3099,13 @@ impl App {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        crate::profile::mark("tui start");
         (self.bg, self.terminal_palette) = detect_terminal_colors();
+        crate::profile::mark("terminal colours");
         let mut terminal = ratatui::init();
         install_mouse_capture_panic_hook();
         let mouse = execute!(std::io::stdout(), EnableMouseCapture);
+        crate::profile::mark("terminal ready");
         let res = match mouse {
             Ok(()) => {
                 self.start_update_check(false);
@@ -3160,6 +3116,7 @@ impl App {
                         None
                     }
                 };
+                crate::profile::mark("watcher ready");
                 if self.loading {
                     self.refresh_deadline = Some(Instant::now());
                 }
@@ -3218,6 +3175,7 @@ impl App {
     ) -> Result<()> {
         let frame_time = Duration::from_millis(16);
         let mut last_frame = Instant::now() - frame_time;
+        let mut first_frame = true;
         loop {
             self.poll_remote_operation();
             self.poll_update();
@@ -3228,6 +3186,10 @@ impl App {
             if last_frame.elapsed() >= frame_time {
                 terminal.draw(|f| self.draw(f))?;
                 last_frame = Instant::now();
+                if first_frame {
+                    first_frame = false;
+                    crate::profile::mark("first frame");
+                }
             }
             let wait = frame_time.saturating_sub(last_frame.elapsed());
             if event::poll(wait)? {
