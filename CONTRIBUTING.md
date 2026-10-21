@@ -27,6 +27,12 @@ cargo run -- path/to/repo      # or: cargo run -- . for the current repo
 
 `figit --help` lists the CLI flags; the README documents the key map.
 
+## Startup profiling
+
+Run `FIGIT_PROFILE_STARTUP=1 figit .` to collect timings from process start
+through the first graph snapshot. The report is printed after you quit, once the
+TUI has restored the terminal, so it never corrupts the screen.
+
 ## Repository layout
 
 ```

@@ -1587,6 +1587,7 @@ impl App {
                         if !initial_status_has_changes {
                             self.select_head_commit();
                         }
+                        crate::profile::mark("initial snapshot applied");
                     }
                 }
                 Err(error) if initial_load => {
