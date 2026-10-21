@@ -882,6 +882,22 @@ impl DiffRow {
 
 /// Lays a diff out into rows without doing any syntax highlighting.
 fn diff_layout(lines: &[DiffLine], mode: DiffMode) -> Vec<DiffRow> {
+    if mode == DiffMode::Unified {
+        // Keep the diff's original order: removed lines stay together and
+        // added lines stay together. Pairing is only used to emphasize
+        // intra-line changes when the lines actually correspond; reordering
+        // unrelated lines makes large rewrites look scrambled.
+        let partners = unified_partners(lines);
+        return lines
+            .iter()
+            .enumerate()
+            .map(|(index, _)| DiffRow::Unified {
+                index,
+                partner: partners.get(&index).copied(),
+            })
+            .collect();
+    }
+
     let mut rows = Vec::new();
     let mut paired_added = HashSet::new();
     let mut i = 0;
@@ -890,7 +906,7 @@ fn diff_layout(lines: &[DiffLine], mode: DiffMode) -> Vec<DiffRow> {
             i += 1;
             continue;
         }
-        if mode == DiffMode::SideBySide && lines[i].kind == DiffKind::Meta {
+        if lines[i].kind == DiffKind::Meta {
             rows.push(DiffRow::Side {
                 old: Some(i),
                 new: None,
@@ -900,52 +916,50 @@ fn diff_layout(lines: &[DiffLine], mode: DiffMode) -> Vec<DiffRow> {
         }
         if lines[i].kind == DiffKind::Removed {
             if let Some(j) = next_pairable_added(lines, i, &paired_added) {
-                match mode {
-                    DiffMode::Unified => {
-                        rows.push(DiffRow::Unified {
-                            index: i,
-                            partner: Some(j),
-                        });
-                        rows.push(DiffRow::Unified {
-                            index: j,
-                            partner: Some(i),
-                        });
-                    }
-                    DiffMode::SideBySide => {
-                        rows.push(DiffRow::Side {
-                            old: Some(i),
-                            new: Some(j),
-                        });
-                    }
-                }
+                rows.push(DiffRow::Side {
+                    old: Some(i),
+                    new: Some(j),
+                });
                 paired_added.insert(j);
                 i += 1;
                 continue;
             }
         }
-        rows.push(match mode {
-            DiffMode::Unified => DiffRow::Unified {
-                index: i,
-                partner: None,
+        rows.push(match lines[i].kind {
+            DiffKind::Added => DiffRow::Side {
+                old: None,
+                new: Some(i),
             },
-            DiffMode::SideBySide => match lines[i].kind {
-                DiffKind::Added => DiffRow::Side {
-                    old: None,
-                    new: Some(i),
-                },
-                DiffKind::Removed => DiffRow::Side {
-                    old: Some(i),
-                    new: None,
-                },
-                _ => DiffRow::Side {
-                    old: Some(i),
-                    new: Some(i),
-                },
+            DiffKind::Removed => DiffRow::Side {
+                old: Some(i),
+                new: None,
+            },
+            _ => DiffRow::Side {
+                old: Some(i),
+                new: Some(i),
             },
         });
         i += 1;
     }
     rows
+}
+
+/// Positional removed/added partners within each contiguous change block, used
+/// for intra-line emphasis in the unified view.
+fn unified_partners(lines: &[DiffLine]) -> HashMap<usize, usize> {
+    let mut partners = HashMap::new();
+    let mut paired_added = HashSet::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.kind != DiffKind::Removed {
+            continue;
+        }
+        if let Some(added) = next_pairable_added(lines, index, &paired_added) {
+            partners.insert(index, added);
+            partners.insert(added, index);
+            paired_added.insert(added);
+        }
+    }
+    partners
 }
 
 fn render_diff(
