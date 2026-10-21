@@ -854,6 +854,23 @@ fn replaced_lines_pair_by_position_when_line_numbers_shift() {
 }
 
 #[test]
+fn unified_diff_keeps_removed_lines_before_added_lines() {
+    let parsed = parse_diff("@@ -1,3 +1,3 @@\n-a\n-b\n-c\n+x\n+y\n+z\n");
+    let rows = diff_layout(&parsed, DiffMode::Unified);
+    let order: Vec<&str> = rows
+        .iter()
+        .map(|row| match row {
+            DiffRow::Unified { index, .. } => parsed[*index].text.as_str(),
+            DiffRow::Side { .. } => unreachable!("unified layout returned a side row"),
+        })
+        .collect();
+    assert_eq!(
+        order,
+        ["@@ -1,3 +1,3 @@", "-a", "-b", "-c", "+x", "+y", "+z"]
+    );
+}
+
+#[test]
 fn skip_columns_drops_display_columns() {
     assert_eq!(skip_columns("abcdef", 0), "abcdef");
     assert_eq!(skip_columns("abcdef", 2), "cdef");
