@@ -1,18 +1,46 @@
 #!/bin/sh
-# figit installer bootstrap: always runs the latest published release.
+# figit installer bootstrap: runs the latest stable release, or the newest
+# pre-release when no stable release exists yet.
 set -eu
 
-url="https://github.com/agom/figit/releases/latest/download/figit-installer.sh"
+latest="https://github.com/agom/figit/releases/latest/download/figit-installer.sh"
+api="https://api.github.com/repos/agom/figit/releases?per_page=1"
+
+if command -v curl >/dev/null 2>&1; then
+    if curl -fsIL -o /dev/null "$latest"; then
+        url="$latest"
+    else
+        url=$(curl -fsSL "$api" \
+            | grep -o 'https://github.com/agom/figit/releases/download/[^"]*/figit-installer.sh' \
+            | head -n 1 || true)
+    fi
+elif command -v wget >/dev/null 2>&1; then
+    # `--spider` is not available in every wget, but a failed probe only means
+    # we resolve the newest release from the API instead.
+    if wget --spider -q "$latest" 2>/dev/null; then
+        url="$latest"
+    else
+        url=$(wget -qO- "$api" \
+            | grep -o 'https://github.com/agom/figit/releases/download/[^"]*/figit-installer.sh' \
+            | head -n 1 || true)
+    fi
+else
+    echo "figit: install requires curl or wget" >&2
+    exit 1
+fi
+
+if [ -z "${url:-}" ]; then
+    echo "figit: could not find a published release to install" >&2
+    exit 1
+fi
+
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT INT TERM
 
 if command -v curl >/dev/null 2>&1; then
     curl -sSfL "$url" -o "$tmp"
-elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp" "$url"
 else
-    echo "figit: install requires curl or wget" >&2
-    exit 1
+    wget -qO "$tmp" "$url"
 fi
 
 sh "$tmp"
