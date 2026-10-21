@@ -1662,3 +1662,43 @@ fn bench_secondary_paths() {
         println!("BENCH three_way_lines={n} frame={ms:.3}ms");
     }
 }
+
+#[test]
+fn wrapped_text_preserves_characters_and_spaces() {
+    let text = "aaaaa bbbbb ccccc ddddd eeeee fffff ggggg";
+    let chars: Vec<char> = text.chars().collect();
+    let lines = wrap_text(text, 20);
+    assert!(lines.len() > 1);
+    assert!(lines.iter().all(|line| {
+        chars[line.start..line.end]
+            .iter()
+            .map(|&character| char_width(character))
+            .sum::<usize>()
+            <= 20
+    }));
+    let rejoined: String = lines
+        .iter()
+        .map(|line| chars[line.start..line.end].iter().collect::<String>())
+        .collect();
+    assert_eq!(rejoined, text);
+}
+
+#[test]
+fn wrapped_cursor_follows_word_wrapped_lines() {
+    let text = "aaaaa bbbbb ccccc ddddd";
+    let chars: Vec<char> = text.chars().collect();
+    let lines = wrap_text(text, 20);
+    let word_start = text.find("ddddd").expect("word");
+    assert_eq!(wrapped_cursor(&lines, &chars, word_start), (1, 0));
+    assert_eq!(wrapped_cursor(&lines, &chars, word_start + 2), (1, 2));
+}
+
+#[test]
+fn wrapped_cursor_handles_explicit_newlines() {
+    let text = "ab\ncd";
+    let chars: Vec<char> = text.chars().collect();
+    let lines = wrap_text(text, 10);
+    assert_eq!(lines.len(), 2);
+    assert_eq!(wrapped_cursor(&lines, &chars, 2), (0, 2));
+    assert_eq!(wrapped_cursor(&lines, &chars, 3), (1, 0));
+}

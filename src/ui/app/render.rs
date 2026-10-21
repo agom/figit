@@ -1380,11 +1380,14 @@ impl App {
             self.commit_description_cursor,
             description_area,
         );
+        let description_lines = wrapped_text_lines(
+            &self.commit_description,
+            usize::from(description_area.width).max(1),
+        );
         f.render_widget(
-            Paragraph::new(self.commit_description.clone())
+            Paragraph::new(description_lines)
                 .style(description_style)
                 .scroll((description_scroll, 0))
-                .wrap(Wrap { trim: false })
                 .block(description_block),
             panes[1],
         );
