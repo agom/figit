@@ -1954,6 +1954,36 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
 }
 
 #[test]
+fn reword_description_cursor_follows_wrapped_words() {
+    let repository = init_linear_repository();
+    git_ok(
+        repository.path(),
+        &[
+            "commit",
+            "--quiet",
+            "--amend",
+            "--allow-empty",
+            "-m",
+            "tip commit",
+            "-m",
+            "aaaaa bbbbb ccccc ddddd eeeee fffff ggggg hhhhh iiiii jjjjj kkkkk lllll",
+        ],
+    );
+
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("tip commit");
+    tui.send(b"w");
+    tui.wait_for("Reword selected commit");
+    tui.send(b"\t");
+    // The description wraps; the cursor must sit at the end of the wrapped word
+    // on the same visual line, not at the character-wrap boundary above it.
+    tui.assert_cursor_after("lllll");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Reword selected commit");
+    tui.quit();
+}
+
+#[test]
 fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
     let repository = init_conflict_repository();
     let mut tui = Tui::launch(repository.path());

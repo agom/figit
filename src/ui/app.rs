@@ -137,29 +137,143 @@ fn single_line_cursor(
     )
 }
 
-fn wrapped_text_cursor(text: &str, cursor_index: usize, area: Rect) -> (Position, u16) {
-    let width = usize::from(area.width).max(1);
-    let mut row = 0usize;
-    let mut column = 0usize;
-    let mut position = None;
-    for (index, character) in text.chars().enumerate() {
-        let character_width = Line::from(character.to_string()).width().max(1);
-        if character != '\n' && column + character_width > width {
-            row += 1;
-            column = 0;
+/// One visual line of wrapped editor text. `start`/`end` are character
+/// indices; a line that ends at an explicit newline includes the newline index
+/// in `ends_with_newline` so the cursor can sit at the end of the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WrappedLine {
+    start: usize,
+    end: usize,
+    ends_with_newline: bool,
+}
+
+fn char_width(character: char) -> usize {
+    Line::from(character.to_string()).width().max(1)
+}
+
+/// Wrap `text` to `width` display columns, preferring spaces but preserving
+/// every character (including the spaces at the break) so rendering and cursor
+/// math agree.
+fn wrap_text(text: &str, width: usize) -> Vec<WrappedLine> {
+    let chars: Vec<char> = text.chars().collect();
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut logical_start = 0;
+    loop {
+        let mut logical_end = logical_start;
+        while logical_end < chars.len() && chars[logical_end] != '\n' {
+            logical_end += 1;
         }
-        if index == cursor_index {
-            position = Some((row, column));
+        let has_newline = logical_end < chars.len();
+        wrap_logical_line(
+            &chars,
+            logical_start,
+            logical_end,
+            has_newline,
+            width,
+            &mut lines,
+        );
+        if !has_newline {
             break;
         }
-        if character == '\n' {
-            row += 1;
-            column = 0;
-        } else {
-            column += character_width;
+        logical_start = logical_end + 1;
+        if logical_start == chars.len() {
+            lines.push(WrappedLine {
+                start: logical_start,
+                end: logical_start,
+                ends_with_newline: false,
+            });
+            break;
         }
     }
-    let (row, column) = position.unwrap_or((row, column));
+    lines
+}
+
+fn wrap_logical_line(
+    chars: &[char],
+    start: usize,
+    end: usize,
+    has_newline: bool,
+    width: usize,
+    lines: &mut Vec<WrappedLine>,
+) {
+    if start == end {
+        lines.push(WrappedLine {
+            start,
+            end,
+            ends_with_newline: has_newline,
+        });
+        return;
+    }
+
+    let mut segment_start = start;
+    let mut column = 0;
+    let mut last_space = None;
+    let mut index = start;
+    while index < end {
+        let width_char = char_width(chars[index]);
+        if column + width_char > width && index > segment_start {
+            let break_at = last_space
+                .filter(|&space| space + 1 > segment_start)
+                .map_or(index, |space| space + 1);
+            lines.push(WrappedLine {
+                start: segment_start,
+                end: break_at,
+                ends_with_newline: false,
+            });
+            segment_start = break_at;
+            index = segment_start;
+            column = 0;
+            last_space = None;
+            continue;
+        }
+        column += width_char;
+        if chars[index] == ' ' {
+            last_space = Some(index);
+        }
+        index += 1;
+    }
+
+    lines.push(WrappedLine {
+        start: segment_start,
+        end,
+        ends_with_newline: has_newline,
+    });
+}
+
+fn wrapped_cursor(lines: &[WrappedLine], chars: &[char], cursor: usize) -> (usize, usize) {
+    let cursor = cursor.min(chars.len());
+    for (row, line) in lines.iter().enumerate() {
+        let is_last = row + 1 == lines.len();
+        let contains = if line.ends_with_newline || is_last {
+            cursor >= line.start && cursor <= line.end
+        } else {
+            cursor >= line.start && cursor < line.end
+        };
+        if contains {
+            let column = chars[line.start..cursor.min(line.end)]
+                .iter()
+                .map(|&character| char_width(character))
+                .sum();
+            return (row, column);
+        }
+    }
+    (lines.len().saturating_sub(1), 0)
+}
+
+fn wrapped_text_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    wrap_text(text, width)
+        .into_iter()
+        .map(|line| Line::from(chars[line.start..line.end].iter().collect::<String>()))
+        .collect()
+}
+
+fn wrapped_text_cursor(text: &str, cursor_index: usize, area: Rect) -> (Position, u16) {
+    let width = usize::from(area.width).max(1);
+    let chars: Vec<char> = text.chars().collect();
+    let lines = wrap_text(text, width);
+    let (row, column) = wrapped_cursor(&lines, &chars, cursor_index);
 
     let visible_height = usize::from(area.height).max(1);
     let scroll = row.saturating_sub(visible_height - 1);
