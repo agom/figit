@@ -1166,6 +1166,17 @@ fn render_full_app(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn hiding_the_graph_gives_the_diff_two_thirds_of_the_width() {
+    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+    app.graph_visible = false;
+    let _ = render_full_app(&mut app, 120, 30);
+    let staging = app.staging_area.width;
+    let diff = app.diff_area.width;
+    assert_eq!(staging, 40, "staging should get one third of 120 columns");
+    assert_eq!(diff, 80, "diff should get the remaining two thirds");
+}
+
+#[test]
 fn help_overlay_clears_the_panels_behind_it() {
     let mut app = App::new(synthetic_graph(), Vec::new(), None);
     app.handle_key(KeyEvent::from(KeyCode::Char('?')));

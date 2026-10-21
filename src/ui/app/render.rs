@@ -26,8 +26,10 @@ impl App {
             };
             (left[0], left[1], right[0], right[1])
         } else {
-            let body = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(0)])
-                .split(chunks[0]);
+            // Without the graph, split staging/diff 1/3–2/3 so the diff gets
+            // the bulk of the space.
+            let body =
+                Layout::horizontal([Constraint::Ratio(1, 3), Constraint::Min(0)]).split(chunks[0]);
             (Rect::default(), Rect::default(), body[0], body[1])
         };
         let status_area = chunks[1];
