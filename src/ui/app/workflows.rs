@@ -57,11 +57,12 @@ impl App {
                 unreachable!("rebase actions are handled above")
             }
         };
-        if backend
-            .commit(&self.commit_title, &self.commit_description, amend, fixup)
-            .is_ok()
-        {
-            self.reload_after_commit();
+        match backend.commit(&self.commit_title, &self.commit_description, amend, fixup) {
+            Ok(()) => {
+                self.reload_after_commit();
+                self.remote_notice = Some(("Commit created".into(), Instant::now()));
+            }
+            Err(error) => self.action_error = Some(error.to_string()),
         }
     }
 
@@ -2428,7 +2429,13 @@ impl App {
     /// The furthest the focused diff can be panned horizontally, based on its
     /// widest line and the current pane width.
     fn diff_max_scroll_x(&self) -> u16 {
-        let width = usize::from(self.diff_area.width.saturating_sub(2));
+        let width = usize::from(self.diff_area.width.saturating_sub(
+            if self.hunk_mode || self.line_mode {
+                4
+            } else {
+                2
+            },
+        ));
         if width == 0 || self.diff_lines.is_empty() {
             return 0;
         }

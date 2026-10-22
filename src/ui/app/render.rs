@@ -3,20 +3,43 @@ use super::*;
 impl App {
     pub(super) fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
-        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-        let (graph_area, details_area, staging_area, diff_area) = if self.three_way_view.is_some() {
-            let vertical =
-                Layout::vertical([Constraint::Percentage(40), Constraint::Min(0)]).split(chunks[0]);
-            if self.graph_visible {
-                let upper = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(0)])
-                    .split(vertical[0]);
-                (upper[0], Rect::default(), upper[1], vertical[1])
-            } else {
-                (Rect::default(), Rect::default(), vertical[0], vertical[1])
+        self.viewport_width = area.width;
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(area);
+        let body_area = chunks[1];
+        let hidden = Rect::default();
+        let (graph_area, details_area, staging_area, diff_area) = if self.maximized {
+            match self.focus {
+                Focus::Graph => (body_area, hidden, hidden, hidden),
+                Focus::Details => (hidden, body_area, hidden, hidden),
+                Focus::Status => (hidden, hidden, body_area, hidden),
+                Focus::Diff | Focus::Commit => (hidden, hidden, hidden, body_area),
             }
-        } else if self.graph_visible {
+        } else if !self.graph_visible {
+            // Keep the diff boundary stable as files move between the lists.
+            let top_height = (body_area.height / 3).max(5).min(body_area.height / 2);
+            let body = Layout::vertical([Constraint::Length(top_height), Constraint::Min(0)])
+                .split(body_area);
+            if self.historical_commit.is_some() && self.three_way_view.is_none() {
+                let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Min(0)])
+                    .split(body[0]);
+                (hidden, top[1], top[0], body[1])
+            } else {
+                (hidden, hidden, body[0], body[1])
+            }
+        } else if self.three_way_view.is_some() {
+            let vertical =
+                Layout::vertical([Constraint::Percentage(40), Constraint::Min(0)]).split(body_area);
+            let upper = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(0)])
+                .split(vertical[0]);
+            (upper[0], hidden, upper[1], vertical[1])
+        } else {
             let body = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(0)])
-                .split(chunks[0]);
+                .split(body_area);
             let right =
                 Layout::vertical([Constraint::Percentage(45), Constraint::Min(0)]).split(body[1]);
             let left = if self.historical_commit.is_some() {
@@ -25,14 +48,12 @@ impl App {
                 Layout::vertical([Constraint::Min(0), Constraint::Length(0)]).split(body[0])
             };
             (left[0], left[1], right[0], right[1])
-        } else {
-            // Without the graph, split staging/diff 1/3–2/3 so the diff gets
-            // the bulk of the space.
-            let body =
-                Layout::horizontal([Constraint::Ratio(1, 3), Constraint::Min(0)]).split(chunks[0]);
-            (Rect::default(), Rect::default(), body[0], body[1])
         };
-        let status_area = chunks[1];
+        let status_area = chunks[2];
+        f.render_widget(
+            Paragraph::new(self.repository_header(area.width as usize)),
+            chunks[0],
+        );
 
         self.staging_area = staging_area;
         self.graph_area = graph_area;
@@ -40,15 +61,9 @@ impl App {
         self.diff_area = diff_area;
         self.render_staging(f, staging_area);
 
-        if self.graph_visible {
+        if !graph_area.is_empty() {
             let graph_focused = self.focus == Focus::Graph;
-            let hints = graph_hint_lines(
-                graph_area.width.saturating_sub(2) as usize,
-                graph_focused,
-                self.selected_current_branch(),
-            );
-            let hint_lines = hints.len();
-            let height = graph_area.height.saturating_sub(2 + hint_lines as u16) as usize;
+            let height = graph_area.height.saturating_sub(2) as usize;
             self.clamp_scroll(height);
             if self.scroll_to_selected_graph {
                 let viewport = height.max(1);
@@ -65,9 +80,7 @@ impl App {
             let has_local = !self.local_status.is_empty();
             if has_local && self.scroll_y == 0 && lines.len() < height {
                 let style = if self.selected_graph == 0 {
-                    Style::default()
-                        .fg(Color::LightYellow)
-                        .bg(Color::Rgb(45, 50, 65))
+                    self.selection_style(graph_focused).fg(Color::LightYellow)
                 } else {
                     Style::default()
                         .fg(Color::LightYellow)
@@ -117,7 +130,7 @@ impl App {
                     sha.style = sha.style.fg(color);
                 }
                 if self.selected_graph == graph_index {
-                    line = line.style(Style::default().bg(Color::Rgb(45, 50, 65)));
+                    line = line.style(self.selection_style(graph_focused));
                 }
                 pad_colored_lines(std::slice::from_mut(&mut line), width);
                 lines.push(line);
@@ -126,13 +139,6 @@ impl App {
                 Paragraph::new(lines).block(self.panel_block("Graph", graph_focused)),
                 graph_area,
             );
-            let hint_area = Rect::new(
-                graph_area.x + 1,
-                graph_area.y + graph_area.height.saturating_sub(1 + hint_lines as u16),
-                graph_area.width.saturating_sub(2),
-                hint_lines as u16,
-            );
-            f.render_widget(Paragraph::new(hints), hint_area);
             let total_graph = self.rows.len() + usize::from(has_local);
             if total_graph > height {
                 let mut state = ScrollbarState::new(total_graph)
@@ -153,11 +159,13 @@ impl App {
                     &mut state,
                 );
             }
-            if self.historical_commit.is_some() {
-                self.render_commit_details(f, details_area);
-            }
         }
-        if self.three_way_view.is_some() {
+        if !details_area.is_empty() {
+            self.render_commit_details(f, details_area);
+        }
+        if diff_area.is_empty() {
+            // A maximized neighboring pane owns the body.
+        } else if self.three_way_view.is_some() {
             self.render_three_way_view(f, diff_area);
         } else {
             let viewport = diff_area.height.saturating_sub(2) as usize;
@@ -174,8 +182,16 @@ impl App {
                     "Loading commit diff…"
                 } else if self.diff_path.is_some() {
                     "No text changes to show for this file"
+                } else if self.historical_commit.is_some() {
+                    "This commit has no file changes"
+                } else if self.local_status.is_empty() {
+                    if self.graph_visible {
+                        "Working tree clean\nSelect a commit in the graph to inspect its changes."
+                    } else {
+                        "Working tree clean\nPress g to show history and select a commit."
+                    }
                 } else {
-                    "Select a modified file to view its diff"
+                    "Select a file above to view its changes"
                 })
             } else if let Some((ours, theirs)) = self.selected_conflict_colors() {
                 let rendered = render_conflict_diff(
@@ -228,45 +244,28 @@ impl App {
                 (None, _) => "Diff".to_string(),
             };
             let mut diff_block = self.panel_block(&diff_title, self.focus == Focus::Diff);
-            let conflicted = self
-                .status
-                .get(self.selected_status)
-                .is_some_and(StatusEntry::is_conflict);
-            if self.three_way_view.is_none() && self.diff_path.is_some() && !conflicted {
-                let mut actions = Vec::new();
-                // Staging keys only apply to the working-tree/index diff; hunk
-                // navigation works for a read-only commit diff too.
-                if self.historical_commit.is_none() {
-                    let operation = if self.diff_target == DiffTarget::Index {
-                        "unstage"
-                    } else {
-                        "stage"
-                    };
-                    actions.push(("Space", operation));
-                }
-                if !self.hunk_header_indices.is_empty() {
-                    actions.push(("[/]", "hunk"));
-                }
-                if self.historical_commit.is_none() {
-                    if self.hunk_mode || self.line_mode {
-                        actions.push(("f/h/l", "• file/hunk/line"));
-                    } else {
-                        actions.push(("h/l", "• hunk/line mode"));
+            if self.diff_path.is_some() {
+                let scope = if self.historical_commit.is_some() {
+                    "read-only"
+                } else if self.diff_target == DiffTarget::Index {
+                    "staged"
+                } else {
+                    "unstaged"
+                };
+                let mode = if self.line_mode {
+                    "line selection · f file"
+                } else if self.hunk_mode {
+                    "hunk selection · f file"
+                } else {
+                    match self.diff_mode {
+                        DiffMode::Unified => "unified",
+                        DiffMode::SideBySide => "side-by-side",
                     }
-                }
-                if !actions.is_empty() {
-                    let key_color = if self.focus == Focus::Diff {
-                        Color::LightCyan
-                    } else {
-                        Color::DarkGray
-                    };
-                    let hints = styled_key_hints_fitting(
-                        &actions,
-                        key_color,
-                        usize::from(diff_area.width.saturating_sub(2)),
-                    );
-                    diff_block = diff_block.title_bottom(hints);
-                }
+                };
+                diff_block = diff_block.title_bottom(Span::styled(
+                    format!(" {scope} · {mode} "),
+                    Style::default().fg(Color::DarkGray),
+                ));
             }
             f.render_widget(diff_widget.block(diff_block), diff_area);
             if rendered_len > viewport {
@@ -322,6 +321,7 @@ impl App {
         if self.help_popup {
             self.render_help_popup(f, area);
         }
+        self.apply_terminal_theme(f.buffer_mut());
     }
 
     fn render_help_popup(&self, f: &mut Frame, area: Rect) {
@@ -329,7 +329,8 @@ impl App {
             (
                 "Global",
                 &[
-                    ("Tab", "cycle focus"),
+                    ("Tab / Shift+Tab", "next / previous pane"),
+                    ("z", "maximize / restore focused pane"),
                     ("g", "toggle graph pane"),
                     ("j / k", "move selection"),
                     ("/", "search commits"),
@@ -1122,6 +1123,9 @@ impl App {
     }
 
     fn render_staging(&self, f: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
         if self.historical_commit.is_some() {
             let indices: Vec<usize> = (0..self.status.len()).collect();
             self.render_status_section(
@@ -1137,7 +1141,7 @@ impl App {
         let staged = self.section_indices(StatusSection::Staged);
         let unstaged = self.section_indices(StatusSection::Unstaged);
 
-        let panes = Layout::vertical([Constraint::Percentage(50), Constraint::Min(0)]).split(area);
+        let panes = self.staging_panes(area);
         self.render_status_section(
             f,
             panes[0],
@@ -1266,22 +1270,8 @@ impl App {
             };
             let panes =
                 Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(inner);
-            let commit_style = if self.commit_field == CommitField::Commit {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightGreen)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::LightGreen)
-            };
-            let cancel_style = if self.commit_field == CommitField::Cancel {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightRed)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::LightRed)
-            };
+            let commit_style = self.button_style(self.commit_field == CommitField::Commit);
+            let cancel_style = self.button_style(self.commit_field == CommitField::Cancel);
             let prompt = match &self.commit_mode {
                 CommitMode::Normal => "Create the commit?".to_string(),
                 CommitMode::Amend => "Amend the latest commit?".to_string(),
@@ -1300,9 +1290,23 @@ impl App {
             f.render_widget(Paragraph::new(prompt).wrap(Wrap { trim: false }), panes[0]);
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(" Confirm ", commit_style),
+                    Span::styled(
+                        if self.commit_field == CommitField::Commit {
+                            "▸ Confirm "
+                        } else {
+                            "  Confirm "
+                        },
+                        commit_style,
+                    ),
                     Span::raw("  "),
-                    Span::styled(" Cancel ", cancel_style),
+                    Span::styled(
+                        if self.commit_field == CommitField::Cancel {
+                            "▸ Cancel "
+                        } else {
+                            "  Cancel "
+                        },
+                        cancel_style,
+                    ),
                 ]))
                 .block(Block::default().borders(Borders::ALL)),
                 panes[1],
@@ -1391,22 +1395,8 @@ impl App {
             f.set_cursor_position(description_cursor);
         }
 
-        let commit_style = if self.commit_field == CommitField::Commit {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::LightGreen)
-        };
-        let cancel_style = if self.commit_field == CommitField::Cancel {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightRed)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::LightRed)
-        };
+        let commit_style = self.button_style(self.commit_field == CommitField::Commit);
+        let cancel_style = self.button_style(self.commit_field == CommitField::Cancel);
         let confirm_label = match self.commit_mode {
             CommitMode::Reword(_) => " Rebase ",
             CommitMode::RebaseReplacement => " Replace ",
@@ -1422,9 +1412,26 @@ impl App {
         );
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(confirm_label, commit_style),
+                Span::styled(
+                    format!(
+                        "{}{confirm_label}",
+                        if self.commit_field == CommitField::Commit {
+                            "▸"
+                        } else {
+                            " "
+                        }
+                    ),
+                    commit_style,
+                ),
                 Span::raw("  "),
-                Span::styled(" Cancel ", cancel_style),
+                Span::styled(
+                    if self.commit_field == CommitField::Cancel {
+                        "▸ Cancel "
+                    } else {
+                        "  Cancel "
+                    },
+                    cancel_style,
+                ),
             ]))
             .block(button_block),
             panes[2],
@@ -1443,7 +1450,7 @@ impl App {
                 .min(usize::from(area.height)) as u16
         } else if action == GraphAction::Undo {
             area.height.min(16)
-        } else if self.action_error.is_some() {
+        } else if self.action_error.is_some() || action == GraphAction::Discard {
             area.height.min(10)
         } else {
             area.height.min(8)
@@ -1588,23 +1595,13 @@ impl App {
                 panes[0],
             );
             let labels = [" Soft ", " Mixed ", " Hard ", " Cancel "];
-            let colors = [
-                Color::LightGreen,
-                Color::LightYellow,
-                Color::LightRed,
-                Color::Red,
-            ];
             let mut button_spans = Vec::new();
             for (i, label) in labels.iter().enumerate() {
-                let style = if self.reset_focus == i {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(colors[i])
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(colors[i])
-                };
-                button_spans.push(Span::styled(*label, style));
+                let selected = self.reset_focus == i;
+                button_spans.push(Span::styled(
+                    format!("{}{}", if selected { "▸" } else { " " }, label),
+                    self.button_style(selected),
+                ));
                 if i + 1 < labels.len() {
                     button_spans.push(Span::raw("  "));
                 }
@@ -1624,23 +1621,13 @@ impl App {
                 panes[0],
             );
             let labels = [" Normal ", " Force ", " Force-lease ", " Cancel "];
-            let colors = [
-                Color::LightGreen,
-                Color::LightYellow,
-                Color::LightMagenta,
-                Color::Red,
-            ];
             let mut button_spans = Vec::new();
             for (i, label) in labels.iter().enumerate() {
-                let style = if self.push_focus == i {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(colors[i])
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(colors[i])
-                };
-                button_spans.push(Span::styled(*label, style));
+                let selected = self.push_focus == i;
+                button_spans.push(Span::styled(
+                    format!("{}{}", if selected { "▸" } else { " " }, label),
+                    self.button_style(selected),
+                ));
                 if i + 1 < labels.len() {
                     button_spans.push(Span::raw("  "));
                 }
@@ -1712,7 +1699,17 @@ impl App {
             GraphAction::Discard => {
                 let count = self.discard_paths.len();
                 let plural = if count == 1 { "file" } else { "files" };
-                format!("Discard {count} unstaged {plural}?")
+                let names = self
+                    .discard_paths
+                    .iter()
+                    .take(3)
+                    .map(|path| path.display().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "Discard {count} unstaged {plural}?\n{names}{}\nStaged changes are kept.",
+                    if count > 3 { ", …" } else { "" }
+                )
             }
             GraphAction::Undo => unreachable!("undo has a dedicated reflog picker"),
             _ => format!("Confirm {title} at selected commit?"),
@@ -1805,29 +1802,34 @@ impl App {
                 f.set_cursor_position(cursor);
             }
         } else {
-            f.render_widget(Paragraph::new(content).block(content_block), panes[0]);
+            f.render_widget(
+                Paragraph::new(content)
+                    .wrap(Wrap { trim: false })
+                    .block(content_block),
+                panes[0],
+            );
         }
-        let commit_style = if self.commit_field == CommitField::Commit {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::LightGreen)
-        };
-        let cancel_style = if self.commit_field == CommitField::Cancel {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightRed)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::LightRed)
-        };
+        let commit_style = self.button_style(self.commit_field == CommitField::Commit);
+        let cancel_style = self.button_style(self.commit_field == CommitField::Cancel);
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(" Confirm ", commit_style),
+                Span::styled(
+                    if self.commit_field == CommitField::Commit {
+                        "▸ Confirm "
+                    } else {
+                        "  Confirm "
+                    },
+                    commit_style,
+                ),
                 Span::raw("  "),
-                Span::styled(" Cancel ", cancel_style),
+                Span::styled(
+                    if self.commit_field == CommitField::Cancel {
+                        "▸ Cancel "
+                    } else {
+                        "  Cancel "
+                    },
+                    cancel_style,
+                ),
             ]))
             .block(Block::default().borders(Borders::ALL)),
             panes[1],
@@ -1854,7 +1856,16 @@ impl App {
             .enumerate()
             .map(|(index, entry)| {
                 let short_id = entry.previous_id.chars().take(7).collect::<String>();
-                let text = format!("HEAD@{{{}}}  {short_id}  {}", entry.depth, entry.message);
+                let text = format!(
+                    "{}HEAD@{{{}}}  {short_id}  {}",
+                    if index == self.undo_selection {
+                        "▸ "
+                    } else {
+                        "  "
+                    },
+                    entry.depth,
+                    entry.message
+                );
                 let style = if index == self.undo_selection {
                     Style::default()
                         .fg(Color::Black)
@@ -1902,7 +1913,18 @@ impl App {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                Line::from(Span::styled(remote.clone(), style))
+                Line::from(Span::styled(
+                    format!(
+                        "{}{}",
+                        if index == self.remote_selection {
+                            "▸ "
+                        } else {
+                            "  "
+                        },
+                        remote
+                    ),
+                    style,
+                ))
             })
             .collect::<Vec<_>>();
         pad_colored_lines(&mut remotes, usize::from(area.width));
@@ -1925,11 +1947,18 @@ impl App {
         color: Color,
         section: StatusSection,
     ) {
+        if area.is_empty() {
+            return;
+        }
         let mut lines: Vec<Line> = if indices.is_empty() {
             let empty = if self.details_loading && self.historical_commit.is_some() {
-                "(loading commit files…)"
+                "Loading files…"
+            } else if self.historical_commit.is_some() {
+                "No file changes"
+            } else if section == StatusSection::Staged {
+                "Nothing staged"
             } else {
-                "(none)"
+                "No unstaged changes"
             };
             vec![Line::from(Span::styled(
                 empty,
@@ -1948,58 +1977,24 @@ impl App {
                 .collect()
         };
         pad_colored_lines(&mut lines, usize::from(area.width.saturating_sub(2)));
-        let focused = self.focus == Focus::Status;
-        let style = if focused {
-            Style::default().fg(color).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let hint_key = if focused { color } else { Color::DarkGray };
-        let hint_width = usize::from(area.width.saturating_sub(2));
-        let mut block = Block::default()
+        let focused = self.focus == Focus::Status
+            && (self.historical_commit.is_some() || self.status_section == section);
+        let title = format!("{title} ({})", indices.len());
+        let block = Block::default()
             .borders(Borders::ALL)
             .border_style(if focused {
-                style
+                Color::LightCyan
             } else {
-                Style::default().fg(Color::DarkGray)
+                self.border_color()
             })
-            .title(Span::styled(format!("{title} ({})", indices.len()), style));
-        if self.historical_commit.is_some() {
-            // A commit's file list is read-only: no staging/discard hints.
-        } else if section == StatusSection::Unstaged
-            && !indices.is_empty()
-            && self
-                .status
-                .get(self.selected_status)
-                .is_some_and(StatusEntry::is_conflict)
-        {
-            // Conflicted files are resolved in the three-way view, not staged.
-            let hints = styled_key_hints_fitting(
-                &[("o/t/b", "ours/theirs/base"), ("e", "edit")],
-                hint_key,
-                hint_width,
-            );
-            block = block.title_bottom(hints);
-        } else if title == "Staged" && self.commit_actions_available() {
-            let mut actions = vec![("Space", "unstage")];
-            if self.rebase_edit.is_some() {
-                actions.push(("c", "replace"));
-            } else {
-                actions.extend([("c", "commit"), ("a", "amend")]);
-                if !self.hunk_mode && !self.line_mode {
-                    actions.push(("f", "fixup"));
-                }
-            }
-            let hints = styled_key_hints_fitting(&actions, hint_key, hint_width);
-            block = block.title_bottom(hints);
-        } else if title == "Unstaged" && !indices.is_empty() {
-            let hints = styled_key_hints_fitting(
-                &[("Space", "stage"), ("x", "discard"), ("s", "stash")],
-                hint_key,
-                hint_width,
-            );
-            block = block.title_bottom(hints);
-        }
+            .title(Span::styled(
+                title,
+                Style::default().fg(color).add_modifier(if focused {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            ));
         let viewport = area.height.saturating_sub(2) as usize;
         let scroll = self.status_list_scroll(indices, area);
         f.render_widget(
@@ -2013,7 +2008,11 @@ impl App {
                 .position(scrollbar_position(scroll, indices.len(), viewport))
                 .viewport_content_length(viewport);
             f.render_stateful_widget(
-                minimal_scrollbar(if focused { color } else { Color::DarkGray }),
+                minimal_scrollbar(if focused {
+                    Color::LightCyan
+                } else {
+                    self.border_color()
+                }),
                 border_scrollbar_area(area),
                 &mut state,
             );
@@ -2043,26 +2042,36 @@ impl App {
                 .as_ref()
                 .is_some_and(|view| view.path == entry.path);
         let selected = resolving
-            || (self.focus == Focus::Status
-                && self.selected_statuses.contains(&index)
-                && self.status_section
-                    == if staged {
-                        StatusSection::Staged
-                    } else {
-                        StatusSection::Unstaged
-                    });
-        let selected_bg = Color::Rgb(45, 50, 65);
-        let glyph_style = if selected {
-            Style::default().fg(color).bg(selected_bg)
+            || (self.selected_statuses.contains(&index)
+                && (self.historical_commit.is_some()
+                    || self.status_section
+                        == if staged {
+                            StatusSection::Staged
+                        } else {
+                            StatusSection::Unstaged
+                        }));
+        let active = self.focus == Focus::Status || resolving;
+        let selection = if selected {
+            self.selection_style(active)
         } else {
-            Style::default().fg(color)
+            Style::default()
         };
+        let selected_bg = selection.bg.unwrap_or(Color::Reset);
+        let glyph_style = selection.fg(color);
+        // The marker carries selection when the terminal disables colors.
+        let width = width.saturating_sub(2);
         // Leave the stat blank until the async totals arrive, rather than
         // showing a misleading "+0 -0".
         let stat = self.diff_stats.get(&(entry.path.clone(), staged)).copied();
         let stat_text = stat.map_or_else(String::new, |(added, removed)| {
             format!("+{added} -{removed}")
         });
+        if width < 8 {
+            return Line::from(vec![
+                Span::styled(if selected { "▸ " } else { "  " }, selection),
+                Span::styled(truncate_start(&stat_text, width), selection),
+            ]);
+        }
         let (staged_hunks, unstaged_hunks) = self
             .diff_hunk_counts
             .get(&entry.path)
@@ -2071,7 +2080,7 @@ impl App {
         let total_hunks = staged_hunks + unstaged_hunks;
         let mut hunk_recap = if total_hunks > 0 {
             let count = if staged { staged_hunks } else { unstaged_hunks };
-            Some(format!("{count}/{total_hunks}"))
+            Some(format!("{count}/{total_hunks} hunks"))
         } else {
             None
         };
@@ -2082,7 +2091,7 @@ impl App {
             .map_or(0, |recap| Line::from(recap).width());
         let recap_spacing = usize::from(hunk_recap.is_some());
         if hunk_recap.is_some()
-            && width < glyph_width + 1 + stats_width + recap_width + recap_spacing
+            && width < glyph_width + 1 + stats_width + recap_width + recap_spacing + 9
         {
             // Keep the +/- totals visible on narrow panes; the recap can be
             // omitted when both summaries cannot fit side by side.
@@ -2095,11 +2104,7 @@ impl App {
         let suffix_width = stats_width + recap_width + recap_spacing;
         let path_width = width.saturating_sub(glyph_width + 1 + suffix_width + 1);
         let display_path = truncate_start(&entry.path.display(), path_width);
-        let path_style = if selected {
-            Style::default().bg(selected_bg)
-        } else {
-            Style::default()
-        };
+        let path_style = selection;
         let path_display_width = Line::from(display_path.as_str()).width();
         let available_padding =
             width.saturating_sub(glyph_width + 1 + path_display_width + suffix_width);
@@ -2108,9 +2113,24 @@ impl App {
         } else {
             available_padding.max(1)
         };
+        let (directory, basename) = display_path
+            .rfind('/')
+            .map_or(("", display_path.as_str()), |slash| {
+                display_path.split_at(slash + 1)
+            });
         let mut spans = vec![
+            Span::styled(
+                if selected { "▸ " } else { "  " },
+                selection.fg(Color::LightCyan),
+            ),
             Span::styled(format!("{glyph} "), glyph_style),
-            Span::styled(display_path, path_style),
+            Span::styled(
+                directory.to_string(),
+                path_style
+                    .fg(Color::DarkGray)
+                    .remove_modifier(Modifier::BOLD),
+            ),
+            Span::styled(basename.to_string(), path_style),
             Span::styled(
                 " ".repeat(padding),
                 Style::default().bg(if selected { selected_bg } else { Color::Reset }),
@@ -2161,12 +2181,19 @@ impl App {
                 .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(self.border_color())
         };
         Block::default()
             .borders(Borders::ALL)
             .border_style(style)
-            .title(Span::styled(title.to_string(), style))
+            .title(Span::styled(
+                title.to_string(),
+                if focused {
+                    style
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ))
     }
 
     fn clamp_scroll(&mut self, height: usize) {
@@ -2255,10 +2282,13 @@ impl App {
                     }
                 }
             }
+            let label_budget = width.saturating_sub(used + 13);
+            if label_budget < 6 {
+                break;
+            }
+            text = truncate(&text, label_budget.saturating_sub(5));
             match self.bg {
-                // Rounded pill: bg-colored text cut out of a branch-colored
-                // pill. The half-circle caps are drawn in the same branch
-                // color as the pill on the terminal background.
+                // Rounded caps use the same color as the pill fill.
                 Some(bg) => {
                     let text_style = Style::default().fg(bg).bg(color);
                     let cap_style = Style::default().fg(color).bg(bg);
@@ -2266,15 +2296,13 @@ impl App {
                     line.push_span(Span::styled(format!(" {text} "), text_style));
                     line.push_span(Span::styled(PILL_RIGHT.to_string(), cap_style));
                 }
-                // Fallback when the terminal didn't answer OSC 11: a square
-                // colored block. Reverse video drawing the caps would render
-                // them in the font color (bumps), so we omit them here.
+                // Use reverse video when the terminal background is unknown.
                 None => {
                     let style = Style::default().fg(color).add_modifier(Modifier::REVERSED);
                     line.push_span(Span::styled(format!(" {text} "), style));
                 }
             }
-            used += text.chars().count() + 4; // caps + padding
+            used += Line::from(text.as_str()).width() + if self.bg.is_some() { 4 } else { 2 };
             line.push_span(Span::raw(" "));
             used += 1;
         }
@@ -2286,17 +2314,14 @@ impl App {
         let right = sha_w;
         let summary_max = width.saturating_sub(used).saturating_sub(right + 1);
         let summary = truncate(&commit.summary, summary_max);
-        let mut summary_line = Line::from(Span::styled(
-            summary.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        let mut summary_line = Line::from(Span::styled(summary.clone(), Style::default()));
         if let Some(query) = self.selected_search_query() {
             highlight_search_matches(std::slice::from_mut(&mut summary_line), query);
         }
         for span in summary_line.spans {
             line.push_span(span);
         }
-        used += summary.chars().count();
+        used += Line::from(summary.as_str()).width();
 
         let pad = width.saturating_sub(used).saturating_sub(right).max(1);
         line.push_span(Span::raw(" ".repeat(pad)));
@@ -2492,39 +2517,6 @@ impl App {
                 Style::default().fg(Color::DarkGray),
             ));
         }
-        let key_style = Style::default()
-            .fg(Color::LightCyan)
-            .add_modifier(Modifier::BOLD);
-        let description_style = Style::default().fg(Color::White);
-        let commit_count = self.graph.len();
-        let mut spans = vec![
-            Span::styled(
-                format!(
-                    "figit | {branch} | {commit_count}{} commit{} | ",
-                    if self.graph_complete { "" } else { "+" },
-                    if commit_count == 1 { "" } else { "s" }
-                ),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled("Tab", key_style),
-            Span::styled(" focus • ", description_style),
-            Span::styled("g", key_style),
-            Span::styled(" graph • ", description_style),
-            Span::styled("j/k", key_style),
-            Span::styled(" move • ", description_style),
-        ];
-        if self.diff_path.is_some() && !self.line_mode {
-            spans.push(Span::styled("v", key_style));
-            spans.push(Span::styled(" diff • ", description_style));
-        }
-        spans.extend([
-            Span::styled("?", key_style),
-            Span::styled(" help • ", description_style),
-            Span::styled("U", key_style),
-            Span::styled(" updates • ", description_style),
-            Span::styled("q", key_style),
-            Span::styled(" quit", description_style),
-        ]);
-        Line::from(spans)
+        self.context_hints(self.viewport_width as usize)
     }
 }

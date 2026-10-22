@@ -121,25 +121,16 @@ fn watcher_ignores_git_index_writes_but_not_worktree_changes() {
 }
 
 #[test]
-fn graph_hints_pack_to_available_width_without_overflow() {
-    for width in 20..100 {
-        let hints = graph_hint_lines(width, true, false);
-        assert!(
-            hints.iter().all(|line| line.width() <= width),
-            "hint line exceeds width {width}: {hints:?}"
-        );
-        assert!(hints.iter().any(|line| line.to_string().contains("Commit")));
-        assert!(hints.iter().any(|line| line.to_string().contains("Branch")));
-        assert!(hints
-            .iter()
-            .any(|line| line.to_string().contains("Enter checkout")));
-        assert!(hints
-            .iter()
-            .any(|line| line.to_string().contains("i rebase")));
-        assert!(hints
-            .iter()
-            .any(|line| line.to_string().contains("w reword")));
-        assert!(hints.iter().any(|line| line.to_string().contains("e edit")));
+fn contextual_hints_fit_and_keep_navigation_discoverable() {
+    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+    for focus in [Focus::Graph, Focus::Status, Focus::Diff, Focus::Details] {
+        app.focus = focus;
+        for width in 60..140 {
+            let hints = app.context_hints(width);
+            assert!(hints.width() <= width);
+            assert!(hints.to_string().contains("? help"));
+            assert!(hints.to_string().contains("z maximize"));
+        }
     }
 }
 
@@ -1183,14 +1174,121 @@ fn render_full_app(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn hiding_the_graph_gives_the_diff_two_thirds_of_the_width() {
-    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+fn graph_hidden_layout_keeps_a_full_width_diff_and_stable_boundary() {
+    let mut app = App::new(
+        synthetic_graph(),
+        vec![
+            StatusEntry {
+                path: "a.txt".into(),
+                index: ' ',
+                worktree: 'M',
+            },
+            StatusEntry {
+                path: "b.txt".into(),
+                index: 'M',
+                worktree: ' ',
+            },
+        ],
+        None,
+    );
     app.graph_visible = false;
-    let _ = render_full_app(&mut app, 120, 30);
-    let staging = app.staging_area.width;
-    let diff = app.diff_area.width;
-    assert_eq!(staging, 40, "staging should get one third of 120 columns");
-    assert_eq!(diff, 80, "diff should get the remaining two thirds");
+    for (width, height) in [(80, 24), (120, 40), (24, 8)] {
+        render_full_app(&mut app, width, height);
+        assert_eq!(app.diff_area.width, width);
+        assert_eq!(app.diff_area.y, app.staging_area.bottom());
+        let [unstaged, staged] = app.staging_panes(app.staging_area);
+        assert_eq!(unstaged.y, staged.y);
+        assert_eq!(unstaged.right(), staged.x);
+        let boundary = app.diff_area.y;
+        app.staged_indices.clear();
+        render_full_app(&mut app, width, height);
+        assert_eq!(app.diff_area.y, boundary);
+        app.refresh_status_indices();
+    }
+    app.historical_commit = Some("m".into());
+    render_full_app(&mut app, 120, 40);
+    assert_eq!(app.staging_area.y, app.details_area.y);
+    assert_eq!(app.staging_area.right(), app.details_area.x);
+    assert_eq!(app.details_area.bottom(), app.diff_area.y);
+}
+
+#[test]
+fn hidden_graph_tab_order_follows_the_lists_then_diff_and_skips_empty_lists() {
+    let mut app = App::new(
+        synthetic_graph(),
+        vec![
+            StatusEntry {
+                path: "a.txt".into(),
+                index: ' ',
+                worktree: 'M',
+            },
+            StatusEntry {
+                path: "b.txt".into(),
+                index: 'M',
+                worktree: ' ',
+            },
+        ],
+        None,
+    );
+    app.graph_visible = false;
+    app.focus = Focus::Status;
+    app.status_section = StatusSection::Unstaged;
+    app.cycle_panel_focus(true);
+    assert_eq!(
+        (app.focus, app.status_section),
+        (Focus::Status, StatusSection::Staged)
+    );
+    app.cycle_panel_focus(true);
+    assert_eq!(app.focus, Focus::Diff);
+    app.cycle_panel_focus(false);
+    assert_eq!(
+        (app.focus, app.status_section),
+        (Focus::Status, StatusSection::Staged)
+    );
+    app.staged_indices.clear();
+    app.focus = Focus::Diff;
+    app.cycle_panel_focus(true);
+    assert_eq!(
+        (app.focus, app.status_section),
+        (Focus::Status, StatusSection::Unstaged)
+    );
+    app.cycle_panel_focus(true);
+    assert_eq!(app.focus, Focus::Diff);
+    app.historical_commit = Some("m".into());
+    app.focus = Focus::Status;
+    app.cycle_panel_focus(true);
+    assert_eq!(app.focus, Focus::Details);
+    app.cycle_panel_focus(true);
+    assert_eq!(app.focus, Focus::Diff);
+}
+
+#[test]
+fn maximizing_and_graph_toggles_preserve_diff_state() {
+    let mut app = App::new(
+        synthetic_graph(),
+        vec![StatusEntry {
+            path: "a.txt".into(),
+            index: ' ',
+            worktree: 'M',
+        }],
+        None,
+    );
+    app.focus = Focus::Diff;
+    app.diff_scroll = 4;
+    app.diff_scroll_x = 8;
+    app.diff_mode = DiffMode::SideBySide;
+    app.handle_key(KeyEvent::from(KeyCode::Char('g')));
+    assert_eq!(app.diff_scroll, 4);
+    assert_eq!(app.diff_scroll_x, 8);
+    assert_eq!(app.diff_mode, DiffMode::SideBySide);
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    render_full_app(&mut app, 120, 40);
+    assert_eq!(app.diff_area, Rect::new(0, 1, 120, 38));
+    assert!(app.staging_area.is_empty());
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    render_full_app(&mut app, 120, 40);
+    assert!(!app.staging_area.is_empty());
+    assert_eq!(app.diff_mode, DiffMode::SideBySide);
 }
 
 #[test]
@@ -1271,7 +1369,7 @@ fn conflicted_files_advertise_conflict_keys_instead_of_staging() {
     app.refresh_status_indices();
     let screen = render_full_app(&mut app, 120, 40);
     assert!(
-        screen.contains("ours/theirs/base"),
+        screen.contains("o/t preview side"),
         "conflict keys expected:\n{screen}"
     );
     assert!(
@@ -1364,9 +1462,9 @@ fn three_way_source_columns_use_syntax_colors() {
 }
 
 #[test]
-fn status_line_reports_head_and_count() {
+fn repository_header_reports_head_and_count() {
     let app = App::new(synthetic_graph(), vec![], None);
-    let text = app.status_line().to_string();
+    let text = app.repository_header(120).to_string();
     assert!(text.contains("main"), "status shows branch: {text}");
     assert!(text.contains("4 commits"), "status shows count: {text}");
 }

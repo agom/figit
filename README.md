@@ -69,8 +69,9 @@ figit --version
 
 | Key | Action |
 | --- | --- |
-| `Tab` | Cycle focus between panels |
+| `Tab` / `Shift+Tab` | Focus the next / previous panel |
 | `g` | Toggle the graph pane |
+| `z` | Maximize / restore the focused panel |
 | `j` / `k` (or `↑` / `↓`) | Move the selection / scroll |
 | `/` | Search commits: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
 | `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
@@ -99,6 +100,17 @@ figit --version
 Local branches whose configured upstream no longer exists are marked with `✗`.
 
 ### Staging and diff
+
+Hide the graph with `g` for a full-width diff below side-by-side Unstaged and
+Staged lists. When inspecting a commit, Changes and Commit Details occupy the
+top row. Empty lists shrink without moving the diff boundary; `Tab` follows
+these panels from left to right, then moves to the diff. Use `z` to maximize
+any focused panel. Selection, diff mode, and scroll position carry across layouts
+(scroll is clamped when the visible area grows).
+
+The header shows the repository, branch, and working-tree state. Contextual keys
+appear along the bottom; `?` opens the full shortcut reference. Colors adapt to
+the terminal background, and selection markers remain visible with `NO_COLOR`.
 
 | Key | Action |
 | --- | --- |
