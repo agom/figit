@@ -231,7 +231,7 @@ impl Tui {
     }
 
     /// Wait until the panel whose title contains `title` is the focused one
-    /// (its border/title uses the light-cyan focus colour).
+    /// (its title is bold in dark, light, and no-color terminals).
     fn wait_for_title_focus(&self, title: &str) {
         self.wait_until(
             Duration::from_secs(5),
@@ -241,7 +241,7 @@ impl Tui {
                     let column = line.find(title)?;
                     let column = line[..column].chars().count();
                     let cell = screen.screen().cell(row as u16, column as u16)?;
-                    (cell.fgcolor() == vt100::Color::Idx(14)).then_some(())
+                    cell.bold().then_some(())
                 })
             },
         );
@@ -666,8 +666,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
     tui.wait_for("Unstaged (2)");
     let initial_screen = tui.contents();
     assert!(initial_screen.contains("Graph"));
-    assert!(initial_screen.contains("Commit"));
-    assert!(initial_screen.contains("Branch"));
+    assert!(initial_screen.contains("? help"));
     assert!(
         initial_screen
             .lines()
@@ -696,8 +695,8 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
                 .cell(local_row as u16, 43)
                 .unwrap()
                 .bgcolor(),
-            vt100::Color::Rgb(45, 50, 65),
-            "selected Local changes graph row should fill the Graph width"
+            vt100::Color::Rgb(30, 34, 44),
+            "inactive Local changes selection should fill the Graph width"
         );
         assert_eq!(
             screen
@@ -839,7 +838,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
         String::from_utf8_lossy(&current_branch.stdout).trim(),
         "release/dolor"
     );
-    tui.wait_for("✓  release/dolor");
+    tui.wait_for("✓ ↔ release/dolor");
 
     // Move to the previous release commit, which has no branch ref. `c` must
     // check out that commit detached instead of following the release branch.
@@ -871,7 +870,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
         String::from_utf8_lossy(&checked_out.stdout).trim(),
         detached_target
     );
-    tui.wait_for("(detached)");
+    tui.wait_for("detached HEAD");
 
     tui.quit();
 }
@@ -889,11 +888,7 @@ fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
     tui.wait_for_text_background("context 3", selected);
     let screen = tui.contents();
     assert!(
-        screen.lines().any(|line| {
-            line.contains("Space stage")
-                && line.contains("[/] hunk")
-                && line.contains("f/h/l • file/hunk/line")
-        }),
+        screen.contains("Space stage hunk") && screen.contains("hunk selection"),
         "staging and diff panels should show the shared mode hints:\n{screen}"
     );
     tui.send(b"[");
@@ -1069,8 +1064,8 @@ fn line_mode_stages_only_the_selected_added_line() {
     tui.wait_for("2/2");
 
     tui.send(b"l");
-    tui.wait_for("f/h/l • file/hunk/line");
-    assert!(tui.contents().contains("Space stage • x discard • s stash"));
+    tui.wait_for("line selection");
+    assert!(tui.contents().contains("Space stage line"));
     tui.send(b"f");
     tui.wait_for_text_background("+first ours", vt100::Color::Rgb(38, 56, 43));
     tui.send(b"l");
@@ -1138,7 +1133,7 @@ fn file_staging_switches_sections_when_the_source_list_becomes_empty() {
     tui.wait_for("Unstaged (1)");
     let screen = tui.contents();
     assert!(
-        screen.contains("Space stage • x discard • s stash"),
+        screen.contains("Space stage file"),
         "the empty Staged list should hand selection to Unstaged:\n{screen}"
     );
     tui.quit();
@@ -1158,7 +1153,7 @@ fn staging_and_unstaging_stay_in_the_source_panel_until_it_is_empty() {
         screen.contains("b.txt"),
         "next unstaged file should be selected:\n{screen}"
     );
-    assert!(screen.contains("Space stage • x discard • s stash"));
+    assert!(screen.contains("Space stage file"));
 
     tui.send(b" ");
     tui.wait_for("Staged (2)");
@@ -1167,7 +1162,7 @@ fn staging_and_unstaging_stay_in_the_source_panel_until_it_is_empty() {
     tui.wait_for("Staged (1)");
     tui.wait_for("Unstaged (1)");
     let screen = tui.contents();
-    assert!(screen.contains("Space unstage • c commit"));
+    assert!(screen.contains("Space unstage file • c commit"));
     assert!(
         screen.contains("a.txt"),
         "selection should stay in Staged on the remaining file:\n{screen}"
@@ -1176,7 +1171,7 @@ fn staging_and_unstaging_stay_in_the_source_panel_until_it_is_empty() {
     tui.send(b" ");
     tui.wait_for("Staged (0)");
     tui.wait_for("Unstaged (2)");
-    assert!(tui.contents().contains("Space stage • x discard • s stash"));
+    assert!(tui.contents().contains("Space stage file"));
     tui.quit();
 }
 
@@ -1186,7 +1181,7 @@ fn undo_shortcut_confirms_and_reverts_the_latest_commit() {
     let previous = git_ok(repository.path(), &["rev-parse", "HEAD^"]);
     let mut tui = Tui::launch(repository.path());
     tui.wait_for("Graph");
-    tui.wait_for("u undo");
+    tui.wait_for("? help");
 
     tui.send(b"u");
     tui.wait_for("Undo from reflog");
@@ -1313,7 +1308,7 @@ fn fetch_picker_selects_a_remote_without_changing_branch_config() {
     let remote_head = git_ok(&peer, &["rev-parse", "HEAD"]);
 
     let mut tui = Tui::launch(repository.path());
-    tui.wait_for("F fetch");
+    tui.wait_for("? help");
     tui.send(b"F");
     tui.wait_for("Fetch from remote");
     tui.wait_for("aaa-mirror");
@@ -2267,6 +2262,9 @@ fn conflict_resolver_can_open_the_external_editor() {
     let editor_command = format!("sh {}", editor.display());
     let mut tui = Tui::launch_with_editor(repository.path(), Some(&editor_command));
     tui.wait_for("Three-way merge — file.txt");
+    // A pending side preview must not overwrite the editor's saved result.
+    tui.send(b"t");
+    tui.wait_for("Result vs Base — Theirs");
     tui.send(b"e");
     tui.wait_for("Result vs Base — Edited");
     tui.wait_for("Staged (0)");
@@ -2388,6 +2386,19 @@ fn conflict_hunks_can_be_chosen_and_confirmed_individually() {
     );
     assert!(!after_first.contains("second theirs"));
 
+    tui.send(b"b");
+    tui.wait_for("Restore entire file from Base");
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("file.txt")).unwrap(),
+        after_first,
+        "Base must not erase the already-resolved hunk before confirmation"
+    );
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Restore entire file from Base");
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("file.txt")).unwrap(),
+        after_first
+    );
     tui.send(b"t");
     tui.wait_for("Result vs Base — Theirs");
     tui.send(b"\r");
@@ -2790,6 +2801,16 @@ fn escape_svg(text: &str) -> String {
 }
 
 fn terminal_svg(parser: &vt100::Parser, cols: u16, rows: u16) -> String {
+    terminal_svg_with_defaults(parser, cols, rows, TERM_BG, TERM_FG)
+}
+
+fn terminal_svg_with_defaults(
+    parser: &vt100::Parser,
+    cols: u16,
+    rows: u16,
+    background: &str,
+    foreground: &str,
+) -> String {
     let screen = parser.screen();
     let (cell_w, cell_h) = (8.4_f32, 18.0_f32);
     let (pad, bar) = (12.0_f32, 30.0_f32);
@@ -2817,28 +2838,28 @@ fn terminal_svg(parser: &vt100::Parser, cols: u16, rows: u16) -> String {
         ));
     }
     out.push_str(&format!(
-        "<rect x=\"{ox:.1}\" y=\"{oy:.1}\" width=\"{width:.1}\" height=\"{height:.1}\" fill=\"{TERM_BG}\"/>"
+        "<rect x=\"{ox:.1}\" y=\"{oy:.1}\" width=\"{width:.1}\" height=\"{height:.1}\" fill=\"{background}\"/>"
     ));
 
     for row in 0..rows {
         let mut col = 0u16;
         while col < cols {
             let bg = screen.cell(row, col).map_or_else(
-                || TERM_BG.to_string(),
-                |cell| svg_color(cell.bgcolor(), TERM_BG),
+                || background.to_string(),
+                |cell| svg_color(cell.bgcolor(), background),
             );
             let mut end = col + 1;
             while end < cols {
                 let next = screen.cell(row, end).map_or_else(
-                    || TERM_BG.to_string(),
-                    |cell| svg_color(cell.bgcolor(), TERM_BG),
+                    || background.to_string(),
+                    |cell| svg_color(cell.bgcolor(), background),
                 );
                 if next != bg {
                     break;
                 }
                 end += 1;
             }
-            if bg != TERM_BG {
+            if bg != background {
                 out.push_str(&format!(
                     "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{cell_h:.1}\" fill=\"{bg}\"/>",
                     ox + f32::from(col) * cell_w,
@@ -2865,7 +2886,7 @@ fn terminal_svg(parser: &vt100::Parser, cols: u16, rows: u16) -> String {
             out.push_str(&format!(
                 "<text x=\"{:.1}\" y=\"{baseline:.1}\" fill=\"{}\" textLength=\"{cell_w:.1}\" lengthAdjust=\"spacingAndGlyphs\"",
                 ox + f32::from(col) * cell_w,
-                svg_color(cell.fgcolor(), TERM_FG),
+                svg_color(cell.fgcolor(), foreground),
             ));
             if cell.bold() {
                 out.push_str(" font-weight=\"bold\"");
@@ -2966,4 +2987,205 @@ fn generate_readme_screenshots() {
     tui.wait_for("Stashes (1)");
     capture_render(&tui, "assets/screenshot-stash.png");
     drop(tui);
+}
+
+#[test]
+fn missing_conflict_sides_preview_and_confirm_deletion() {
+    for (scenario, key) in [("modify-delete", b"t"), ("delete-modify", b"o")] {
+        let repository = common::review_fixture(scenario);
+        let original = std::fs::read(repository.path().join("file.txt")).unwrap();
+        let mut tui = Tui::launch(repository.path());
+        tui.wait_for("Three-way merge — file.txt");
+        tui.send(key);
+        tui.wait_for("Delete entire file");
+        assert_eq!(
+            std::fs::read(repository.path().join("file.txt")).unwrap(),
+            original
+        );
+        tui.send(b"\x1b");
+        tui.wait_until_hidden("Delete entire file");
+        assert_eq!(
+            std::fs::read(repository.path().join("file.txt")).unwrap(),
+            original
+        );
+        tui.send(key);
+        tui.wait_for("Delete entire file");
+        tui.send(b"\r");
+        tui.wait_until_hidden("Three-way merge — file.txt");
+        assert!(!repository.path().join("file.txt").exists());
+        assert!(git_ok(repository.path(), &["ls-files", "-u"]).is_empty());
+        tui.quit();
+    }
+}
+
+#[test]
+fn external_repeated_saves_refresh_an_already_modified_diff() {
+    let repository = common::review_fixture("content");
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("changed line 1");
+    let status = git_ok(repository.path(), &["status", "--porcelain"]);
+    for text in ["second external edit\n", "third external edit\n"] {
+        std::fs::write(repository.path().join("file.txt"), text).unwrap();
+        assert_eq!(
+            git_ok(repository.path(), &["status", "--porcelain"]),
+            status
+        );
+        tui.wait_for(text.trim());
+    }
+    tui.quit();
+}
+
+#[test]
+fn external_amend_keeps_selected_commit_and_displayed_diff_in_sync() {
+    let repository = common::review_fixture("history");
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("old-history-content");
+    git_ok(repository.path(), &["rm", "old-only.txt"]);
+    std::fs::write(repository.path().join("file.txt"), "new-history-content\n").unwrap();
+    git_ok(
+        repository.path(),
+        &["commit", "--amend", "-am", "rewritten commit"],
+    );
+    tui.wait_for("rewritten commit");
+    tui.wait_for("new-history-content");
+    tui.wait_until_hidden("old-history-content");
+    tui.wait_until_hidden("old-only.txt");
+    tui.quit();
+}
+
+/// Exercise the actual terminal at both supported review sizes. Set
+/// FIGIT_PREVIEW_DIR to also export the screens for visual inspection.
+#[test]
+fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
+    use std::os::unix::fs::PermissionsExt;
+    for (theme, background, foreground, env) in [
+        ("dark", TERM_BG, TERM_FG, vec![]),
+        ("light", "#fafafa", "#202630", vec![]),
+        ("mono", TERM_BG, TERM_FG, vec![("NO_COLOR", "1")]),
+    ] {
+        for (cols, rows) in [(80, 24), (120, 40)] {
+            let capture = |tui: &Tui, state: &str| {
+                if let Ok(directory) = std::env::var("FIGIT_PREVIEW_DIR") {
+                    std::fs::create_dir_all(&directory).unwrap();
+                    let screen = tui.screen.lock().unwrap();
+                    std::fs::write(
+                        format!("{directory}/{theme}-{cols}-{state}.svg"),
+                        terminal_svg_with_defaults(&screen, cols, rows, background, foreground),
+                    )
+                    .unwrap();
+                    std::fs::write(
+                        format!("{directory}/{theme}-{cols}-{state}.txt"),
+                        screen.screen().contents(),
+                    )
+                    .unwrap();
+                }
+            };
+            let repository = init_two_file_staging_repository();
+            git_ok(repository.path(), &["add", "b.txt"]);
+            let hook = repository.path().join(".git/hooks/pre-commit");
+            std::fs::write(
+                &hook,
+                "#!/bin/sh\necho 'Review hook rejected' >&2\nexit 1\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut tui = Tui::launch_with_theme(
+                repository.path(),
+                None,
+                &env,
+                cols,
+                rows,
+                &osc11_background_reply(background),
+                &osc4_palette_reply(&TERM_PALETTE),
+            );
+            tui.wait_for("Unstaged (1)");
+            tui.wait_for("+1 -1");
+            capture(&tui, "graph");
+            tui.send(b"g");
+            tui.wait_until_hidden("Local changes");
+            let screen = tui.contents();
+            assert!(
+                screen
+                    .lines()
+                    .any(|line| line.contains("Unstaged (1)") && line.contains("Staged (1)")),
+                "{screen}"
+            );
+            tui.wait_for_title_focus("Unstaged");
+            if theme == "mono" {
+                let screen = tui.screen.lock().unwrap();
+                for row in 0..rows {
+                    for col in 0..cols {
+                        let cell = screen.screen().cell(row, col).unwrap();
+                        assert_eq!(cell.fgcolor(), vt100::Color::Default);
+                        assert_eq!(cell.bgcolor(), vt100::Color::Default);
+                    }
+                }
+            } else {
+                tui.wait_for_text_background(
+                    "a.txt",
+                    if theme == "light" {
+                        vt100::Color::Rgb(210, 226, 235)
+                    } else {
+                        vt100::Color::Rgb(45, 50, 65)
+                    },
+                );
+            }
+            capture(&tui, "local");
+            tui.send(b"\t");
+            tui.wait_for_title_focus("Staged");
+            tui.send(b"c");
+            tui.wait_for("Title");
+            tui.send(b"Keep this message\x13");
+            tui.wait_for("Review hook rejected");
+            assert!(tui.contents().contains("Keep this message"));
+            assert_eq!(
+                git_ok(repository.path(), &["log", "-1", "--format=%s"]),
+                "base files"
+            );
+            capture(&tui, "error");
+            tui.send(b"\x1b");
+            tui.wait_until_hidden("Title");
+            tui.send(b"\t");
+            tui.wait_for_title_focus("Diff");
+            tui.send(b"z");
+            tui.wait_until_hidden("Staged (1)");
+            tui.send(b"z");
+            tui.wait_for("Staged (1)");
+            tui.send(b"g\t\t\x1b[B");
+            tui.wait_for("Commit Details");
+            tui.send(b"g");
+            tui.wait_until_hidden("Local changes");
+            tui.wait_for("read-only");
+            let screen = tui.contents();
+            assert!(
+                screen
+                    .lines()
+                    .any(|line| line.contains("Changes") && line.contains("Commit Details")),
+                "{screen}"
+            );
+            capture(&tui, "history");
+            tui.send(b"\t");
+            tui.wait_for_title_focus("Commit Details");
+            tui.send(b"\t");
+            tui.wait_for_title_focus("Diff");
+            tui.quit();
+
+            let repository = init_conflict_repository();
+            let mut tui = Tui::launch_with_theme(
+                repository.path(),
+                None,
+                &env,
+                cols,
+                rows,
+                &osc11_background_reply(background),
+                &osc4_palette_reply(&TERM_PALETTE),
+            );
+            tui.wait_for("Three-way merge");
+            tui.send(b"g");
+            tui.wait_until_hidden("Local changes");
+            tui.wait_for("Base → Ours");
+            capture(&tui, "conflict");
+            tui.quit();
+        }
+    }
 }

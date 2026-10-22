@@ -36,3 +36,19 @@ pub fn configure_peer(path: &Path) {
     git_ok(path, &["config", "user.name", "Figit Peer"]);
     git_ok(path, &["config", "user.email", "peer@example.com"]);
 }
+
+pub fn review_fixture(scenario: &str) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("review fixture directory");
+    let output = Command::new("bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/review-regressions.sh"))
+        .arg(temp.path())
+        .arg(scenario)
+        .output()
+        .expect("build review fixture");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    temp
+}

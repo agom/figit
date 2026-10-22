@@ -41,7 +41,11 @@ pub trait GitBackend {
     fn conflict_commits(&self) -> anyhow::Result<Option<ConflictCommits>>;
     fn conflict_versions(&self, path: &GitPath) -> anyhow::Result<Option<ConflictVersions>>;
     fn choose_conflict_side(&self, path: &GitPath, side: ConflictSide) -> anyhow::Result<()>;
-    fn write_conflict_result(&self, path: &GitPath, result: &[u8]) -> anyhow::Result<()>;
+    fn write_conflict_result(
+        &self,
+        path: &GitPath,
+        result: &ConflictResolution,
+    ) -> anyhow::Result<()>;
     fn stage(&self, path: &GitPath) -> anyhow::Result<()>;
     fn resolve_conflict(&self, path: &GitPath, side: ConflictSide) -> anyhow::Result<()>;
     fn edit_conflict_file(&self, path: &GitPath) -> anyhow::Result<()>;
@@ -127,6 +131,22 @@ pub enum ConflictSide {
     Base,
     Ours,
     Theirs,
+}
+
+/// A deletion is distinct from an empty file and from no pending resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictResolution {
+    Content(Vec<u8>),
+    Delete,
+}
+
+impl ConflictResolution {
+    pub fn content(&self) -> Option<&[u8]> {
+        match self {
+            Self::Content(bytes) => Some(bytes),
+            Self::Delete => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

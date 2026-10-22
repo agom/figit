@@ -9,9 +9,9 @@ use anyhow::{Context, Result};
 use similar::{DiffTag, TextDiff};
 
 use crate::backend::{
-    ConflictSide, ConflictVersions, DiffLineSelection, DiffTarget, GraphWindow, PathDiffStats,
-    RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock, RebasePlanEntry, RebaseTodoAction,
-    UndoInfo,
+    ConflictResolution, ConflictSide, ConflictVersions, DiffLineSelection, DiffTarget, GraphWindow,
+    PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock, RebasePlanEntry,
+    RebaseTodoAction, UndoInfo,
 };
 use crate::core::model::{
     BranchTracking, Commit, GitPath, GraphModel, Oid, RefKind, RefLabel, StatusEntry,
@@ -1187,18 +1187,35 @@ impl super::GitBackend for GixBackend {
             return Ok(None);
         }
         let stage = |number: u8| -> Result<Option<Vec<u8>>> {
+            let present = unmerged.stdout.split(|byte| *byte == 0).any(|entry| {
+                entry
+                    .split(|byte| *byte == b'\t')
+                    .next()
+                    .is_some_and(|header| header.last() == Some(&(b'0' + number)))
+            });
+            if !present {
+                return Ok(None);
+            }
             let spec = revision_path(&format!(":{number}:"), path)?;
             let output = git_output_with_os_arg(&self.workdir, &["show"], spec)?;
-            Ok(output.status.success().then_some(output.stdout))
+            if !output.status.success() {
+                anyhow::bail!(
+                    "read conflict stage {number} for {path}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Ok(Some(output.stdout))
+        };
+        let working = match fs::read(self.workdir.join(path.to_path_buf()?)) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).with_context(|| format!("read conflict file {path}")),
         };
         Ok(Some(ConflictVersions {
             base: stage(1)?,
             ours: stage(2)?,
             theirs: stage(3)?,
-            working: path
-                .to_path_buf()
-                .ok()
-                .and_then(|path| fs::read(self.workdir.join(path)).ok()),
+            working,
         }))
     }
 
@@ -1207,33 +1224,41 @@ impl super::GitBackend for GixBackend {
     }
 
     fn choose_conflict_side(&self, path: &GitPath, side: ConflictSide) -> Result<()> {
-        if side == ConflictSide::Base {
-            let spec = revision_path(":1:", path)?;
-            let base = git_output_with_os_arg(&self.workdir, &["show"], spec)?;
-            if base.status.success() {
-                fs::write(self.workdir.join(path.to_path_buf()?), base.stdout)
-                    .with_context(|| format!("restore base version of {path}"))?;
-            } else {
-                match fs::remove_file(self.workdir.join(path.to_path_buf()?)) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error).with_context(|| format!("remove {path}")),
-                }
-            }
-            return Ok(());
-        }
-
-        let choice = match side {
-            ConflictSide::Base => unreachable!("handled above"),
-            ConflictSide::Ours => "--ours",
-            ConflictSide::Theirs => "--theirs",
+        let versions = self
+            .conflict_versions(path)?
+            .context("conflict versions are unavailable")?;
+        let content = match side {
+            ConflictSide::Base => versions.base,
+            ConflictSide::Ours => versions.ours,
+            ConflictSide::Theirs => versions.theirs,
         };
-        run_git_with_path(&self.workdir, &["checkout", choice, "--"], path)
+        // Keep Git's checkout handling of file modes and filters for a side
+        // that exists. An absent stage must instead remove the working file.
+        if content.is_some() && side != ConflictSide::Base {
+            let choice = if side == ConflictSide::Ours {
+                "--ours"
+            } else {
+                "--theirs"
+            };
+            return run_git_with_path(&self.workdir, &["checkout", choice, "--"], path);
+        }
+        self.write_conflict_result(
+            path,
+            &content.map_or(ConflictResolution::Delete, ConflictResolution::Content),
+        )
     }
 
-    fn write_conflict_result(&self, path: &GitPath, result: &[u8]) -> Result<()> {
-        fs::write(self.workdir.join(path.to_path_buf()?), result)
-            .with_context(|| format!("write conflict result for {path}"))
+    fn write_conflict_result(&self, path: &GitPath, result: &ConflictResolution) -> Result<()> {
+        let destination = self.workdir.join(path.to_path_buf()?);
+        match result {
+            ConflictResolution::Content(bytes) => fs::write(destination, bytes)
+                .with_context(|| format!("write conflict result for {path}")),
+            ConflictResolution::Delete => match fs::remove_file(destination) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).with_context(|| format!("delete conflict file {path}")),
+            },
+        }
     }
 
     fn resolve_conflict(&self, path: &GitPath, side: ConflictSide) -> Result<()> {
@@ -1265,7 +1290,13 @@ impl super::GitBackend for GixBackend {
     }
 
     fn unstage(&self, path: &GitPath) -> Result<()> {
-        run_git_with_path(&self.workdir, &["restore", "--staged", "--"], path)
+        // An unborn branch has no HEAD tree to restore. Remove only the index
+        // entry, even when the working file has changed again since staging.
+        if self.repo.head()?.is_unborn() {
+            run_git_with_path(&self.workdir, &["rm", "--cached", "-f", "--"], path)
+        } else {
+            run_git_with_path(&self.workdir, &["restore", "--staged", "--"], path)
+        }
     }
 
     fn discard(&self, path: &GitPath) -> Result<()> {

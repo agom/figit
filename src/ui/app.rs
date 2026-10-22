@@ -27,9 +27,9 @@ use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
 use crate::backend::{
-    ConflictCommits, ConflictSide, DiffLineSelection, DiffTarget, GitBackend, GraphWindow,
-    PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock, RebasePlanEntry,
-    RebaseTodoAction, StashEntry, UndoInfo,
+    ConflictCommits, ConflictResolution, ConflictSide, DiffLineSelection, DiffTarget, GitBackend,
+    GraphWindow, PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock,
+    RebasePlanEntry, RebaseTodoAction, StashEntry, UndoInfo,
 };
 use crate::core::model::{
     BranchTracking, Commit, DisplayRef, GitPath, GraphModel, RefKind, StatusEntry,
@@ -47,16 +47,16 @@ const PALETTE: [Color; 7] = [
 ];
 
 /// Glyph shown before a local branch that is also tracked on a remote.
-/// Nerd Fonts `nf-fa-github` (U+F09B); swap here if your font differs.
-const REMOTE_GLYPH: &str = "\u{f09b}";
+/// Uses a standard Unicode arrow, with no patched font requirement.
+const REMOTE_GLYPH: &str = "↔";
 
 /// Diffs longer than this are truncated before parsing, which is what keeps
 /// very large files from stalling the UI. Press `L` to load the full diff on
 /// demand.
 const MAX_RENDERED_DIFF_LINES: usize = 20_000;
 
-/// Glyph shown before a tag (Nerd Fonts, U+F04F9).
-const TAG_GLYPH: &str = "\u{f04f9}";
+/// Plain-font tag label.
+const TAG_GLYPH: &str = "tag";
 
 /// Ratatui's initializer installs a hook to restore raw mode and the alternate
 /// screen. Chain one that also releases the mouse-capture mode enabled below.
@@ -68,51 +68,54 @@ fn install_mouse_capture_panic_hook() {
     }));
 }
 
-/// Rounded ends for the negative pills (left/right half black circles).
-const PILL_LEFT: char = '\u{e0b6}'; // 
-const PILL_RIGHT: char = '\u{e0b4}'; // 
+/// Rounded Powerline caps for branch and tag pills.
+const PILL_LEFT: char = '\u{e0b6}';
+const PILL_RIGHT: char = '\u{e0b4}';
 const HEAD_BRANCH_MARKER: &str = "✓";
 
 type TerminalAnsiPalette = [Option<Color>; 16];
 
-/// Truncate `s` to at most `max` characters, adding a trailing ellipsis when
+/// Truncate `s` to at most `max` display columns, adding a trailing ellipsis when
 /// cut. `max == 0` yields an empty string.
 fn truncate(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max {
+    if Line::from(s).width() <= max {
         return s.to_string();
     }
     if max == 0 {
         return String::new();
     }
-    if max == 1 {
-        return "…".to_string();
+    let mut out = String::new();
+    let mut width = 0;
+    for ch in s.chars() {
+        let cells = Line::from(ch.to_string()).width();
+        if width + cells > max - 1 {
+            break;
+        }
+        out.push(ch);
+        width += cells;
     }
-    let keep = max - 1;
-    let head: String = s.chars().take(keep).collect();
-    format!("{head}…")
+    out.push('…');
+    out
 }
 
 fn truncate_start(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max {
+    if Line::from(s).width() <= max {
         return s.to_string();
     }
     if max == 0 {
         return String::new();
     }
-    if max == 1 {
-        return "…".to_string();
+    let mut tail = Vec::new();
+    let mut width = 0;
+    for ch in s.chars().rev() {
+        let cells = Line::from(ch.to_string()).width();
+        if width + cells > max - 1 {
+            break;
+        }
+        tail.push(ch);
+        width += cells;
     }
-    let tail: String = s
-        .chars()
-        .rev()
-        .take(max - 1)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("…{tail}")
+    format!("…{}", tail.into_iter().rev().collect::<String>())
 }
 
 fn single_line_cursor(
@@ -1458,129 +1461,6 @@ fn syn_color(style: SynStyle) -> Color {
     Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b)
 }
 
-struct GraphHintBuilder {
-    lines: Vec<Line<'static>>,
-    current: Vec<Span<'static>>,
-    current_width: usize,
-    width: usize,
-    focused: bool,
-}
-
-impl GraphHintBuilder {
-    fn append_group(&mut self, title: &str, color: Color, actions: &[(&str, &str)]) {
-        let category_color = if self.focused { color } else { Color::DarkGray };
-        let description_color = if self.focused {
-            Color::White
-        } else {
-            Color::DarkGray
-        };
-        for (index, (key, description)) in actions.iter().enumerate() {
-            let mut heading = if index == 0 {
-                format!("{title}  ")
-            } else {
-                String::new()
-            };
-            let item_width = key.chars().count() + 1 + description.chars().count();
-            let separator_width = usize::from(!self.current.is_empty()) * 3;
-            if !self.current.is_empty()
-                && self.current_width + separator_width + heading.chars().count() + item_width
-                    > self.width
-            {
-                self.lines
-                    .push(Line::from(std::mem::take(&mut self.current)));
-                self.current_width = 0;
-            }
-            if self.current.is_empty()
-                && !heading.is_empty()
-                && heading.chars().count() + item_width > self.width
-            {
-                self.lines.push(Line::from(Span::styled(
-                    title.to_string(),
-                    Style::default()
-                        .fg(category_color)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                heading.clear();
-            }
-            if !self.current.is_empty() {
-                self.current
-                    .push(Span::styled(" • ", Style::default().fg(description_color)));
-                self.current_width += 3;
-            }
-            if !heading.is_empty() {
-                self.current.push(Span::styled(
-                    heading.clone(),
-                    Style::default()
-                        .fg(category_color)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                self.current_width += heading.chars().count();
-            }
-            self.current.push(Span::styled(
-                key.to_string(),
-                Style::default()
-                    .fg(category_color)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            self.current.push(Span::styled(
-                format!(" {description}"),
-                Style::default().fg(description_color),
-            ));
-            self.current_width += key.chars().count() + 1 + description.chars().count();
-        }
-    }
-
-    fn finish(mut self) -> Vec<Line<'static>> {
-        if !self.current.is_empty() {
-            self.lines.push(Line::from(self.current));
-        }
-        self.lines
-    }
-}
-
-fn graph_hint_lines(width: usize, focused: bool, on_current_branch: bool) -> Vec<Line<'static>> {
-    let mut builder = GraphHintBuilder {
-        lines: Vec::new(),
-        current: Vec::new(),
-        current_width: 0,
-        width,
-        focused,
-    };
-    builder.append_group(
-        "Commit",
-        Color::LightMagenta,
-        &[
-            ("c", "checkout"),
-            // `p` cherry-picks anywhere except on the checked-out branch tip,
-            // where it pulls instead.
-            ("p", if on_current_branch { "pull" } else { "pick" }),
-            ("x", "revert"),
-            ("u", "undo"),
-            ("/", "search"),
-            ("w", "reword"),
-            ("e", "edit"),
-            ("i", "rebase"),
-            ("R", "onto"),
-        ],
-    );
-    builder.append_group(
-        "Branch",
-        Color::LightGreen,
-        &[
-            ("Enter", "checkout"),
-            ("b", "branch"),
-            ("t", "tag"),
-            ("r", "reset"),
-            ("n", "rename"),
-            ("d", "delete"),
-            ("F", "fetch"),
-            ("+", "push"),
-        ],
-    );
-    builder.append_group("Worktree", Color::LightYellow, &[("s", "stashes")]);
-    builder.finish()
-}
-
 fn styled_key_hints(items: &[(&str, &str)], key_color: Color) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, (key, description)) in items.iter().enumerate() {
@@ -1662,6 +1542,7 @@ pub struct App {
     /// to draw pill text/caps explicitly; `None` falls back to reverse video.
     bg: Option<Color>,
     terminal_palette: TerminalAnsiPalette,
+    no_color: bool,
     focus: Focus,
     selected_status: usize,
     selected_statuses: HashSet<usize>,
@@ -1676,6 +1557,8 @@ pub struct App {
     details_scroll: u16,
     diff_mode: DiffMode,
     graph_visible: bool,
+    maximized: bool,
+    viewport_width: u16,
     diff_number_width: usize,
     commit_title: String,
     commit_title_cursor: usize,
@@ -2199,7 +2082,7 @@ struct ThreeWayView {
     theirs_diff: Vec<DiffLine>,
     result_diff: Vec<DiffLine>,
     working: Vec<u8>,
-    pending_working: Option<Vec<u8>>,
+    pending_resolution: Option<ConflictResolution>,
     result_preview: bool,
     chosen_side: Option<ConflictSide>,
     hunk_index: usize,
@@ -2518,6 +2401,7 @@ impl App {
             historical_commit: None,
             bg: None,
             terminal_palette: [None; 16],
+            no_color: false,
             focus: if has_local_changes {
                 Focus::Status
             } else {
@@ -2535,6 +2419,8 @@ impl App {
             details_scroll: 0,
             diff_mode: DiffMode::Unified,
             graph_visible: true,
+            maximized: false,
+            viewport_width: 120,
             diff_number_width: 3,
             commit_title: String::new(),
             commit_title_cursor: 0,
@@ -2807,7 +2693,7 @@ impl App {
                         theirs_diff: conflict_result_diff(&base, &theirs, "Theirs"),
                         result_diff: conflict_result_diff(&base, &result, "Result"),
                         working,
-                        pending_working: None,
+                        pending_resolution: None,
                         result_preview: false,
                         chosen_side: None,
                         hunk_index: 0,
@@ -2821,14 +2707,20 @@ impl App {
                         .as_ref()
                         .filter(|previous| previous.path == path)
                     {
-                        view.result_preview = previous.result_preview;
-                        view.chosen_side = previous.chosen_side;
-                        view.pending_working = previous.pending_working.clone();
+                        let unchanged = previous.working == view.working
+                            && previous.result_missing == view.result_missing;
+                        if unchanged {
+                            view.result_preview = previous.result_preview;
+                            view.chosen_side = previous.chosen_side;
+                            view.pending_resolution = previous.pending_resolution.clone();
+                        } else if previous.result_preview {
+                            self.action_error = Some("Conflict file changed; preview cancelled. Review the current contents before confirming.".into());
+                        }
                         view.hunk_index = previous.hunk_index;
                         view.scroll_y = previous.scroll_y;
                         view.scroll_x = previous.scroll_x;
-                        if let Some(pending) = view.pending_working.as_deref() {
-                            let result = String::from_utf8_lossy(pending);
+                        if let Some(pending) = view.pending_resolution.as_ref() {
+                            let result = String::from_utf8_lossy(pending.content().unwrap_or_default());
                             view.result_diff = conflict_result_diff(&base, &result, "Result");
                         }
                         let hunk_count =
@@ -2925,10 +2817,12 @@ impl App {
             .as_ref()
             .map(GitPath::display)
             .unwrap_or(Cow::Borrowed(""));
+        let show_marker = self.hunk_mode || self.line_mode;
+        let mut selected_marker = false;
         let mut line = render_diff_row(
             &self.diff_lines,
             row,
-            width,
+            width.saturating_sub(if show_marker { 2 } else { 0 }),
             path.as_ref(),
             self.diff_number_width,
             usize::from(self.diff_scroll_x),
@@ -2944,6 +2838,7 @@ impl App {
                             DiffKind::Added | DiffKind::Removed
                         )
                     {
+                        selected_marker = true;
                         emphasize_selected_diff_line(&mut line, self.diff_lines[selected].kind);
                     }
                 }
@@ -2954,10 +2849,22 @@ impl App {
                         .flatten()
                         .any(|index| index >= start && index < end);
                     if in_hunk {
+                        selected_marker = old == Some(start) || new == Some(start);
                         emphasize_selected_diff_hunk(&mut line);
                     }
                 }
             }
+        }
+        if show_marker {
+            line.spans.insert(
+                0,
+                Span::styled(
+                    if selected_marker { "▸ " } else { "  " },
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .bg(line.style.bg.unwrap_or(Color::Reset)),
+                ),
+            );
         }
         pad_colored_lines(std::slice::from_mut(&mut line), width);
         line
@@ -3228,6 +3135,7 @@ impl App {
 
     pub fn run(&mut self) -> Result<()> {
         crate::profile::mark("tui start");
+        self.no_color = std::env::var("NO_COLOR").is_ok_and(|value| !value.is_empty());
         (self.bg, self.terminal_palette) = detect_terminal_colors();
         crate::profile::mark("terminal colours");
         let mut terminal = ratatui::init();
@@ -3358,6 +3266,10 @@ impl App {
                 _ => None,
             };
             if let Some(delta) = delta {
+                if !self.modal_closed() {
+                    *wheel = None;
+                    return false;
+                }
                 match wheel {
                     Some((x, y, total)) if *x == mouse.column && *y == mouse.row => {
                         *total += delta;
@@ -3376,15 +3288,7 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event) -> bool {
-        if self.graph_action.is_some()
-            || self.commit_popup
-            || self.abort_rebase_popup
-            || self.rebase_plan.is_some()
-            || self.error_popup.is_some()
-            || self.stash_popup.is_some()
-            || self.help_popup
-            || self.search_popup.is_some()
-        {
+        if !self.modal_closed() {
             return match event {
                 Event::Key(key) => self.handle_key(key),
                 // Popups are modal: mouse input must not affect panels behind them.
@@ -3420,7 +3324,14 @@ impl App {
 
     /// True when no modal popup is capturing input.
     fn modal_closed(&self) -> bool {
-        self.graph_action.is_none() && !self.commit_popup && !self.abort_rebase_popup
+        self.graph_action.is_none()
+            && !self.commit_popup
+            && !self.abort_rebase_popup
+            && self.rebase_plan.is_none()
+            && self.error_popup.is_none()
+            && self.stash_popup.is_none()
+            && !self.help_popup
+            && self.search_popup.is_none()
     }
 
     /// Returns `true` when the app should quit.
@@ -3501,6 +3412,27 @@ impl App {
         if self.rebase_plan.is_some() && !self.commit_popup && !self.abort_rebase_popup {
             self.handle_rebase_plan_key(key);
             return false;
+        }
+        if key.code == KeyCode::Esc && self.modal_closed() {
+            if self.pending_fixup {
+                self.pending_fixup = false;
+                if !self.local_status.is_empty() {
+                    self.select_graph_index(0);
+                }
+                self.focus = Focus::Status;
+                self.status_section = StatusSection::Staged;
+                self.ensure_status_selection();
+                return false;
+            }
+            if self
+                .three_way_view
+                .as_ref()
+                .is_some_and(|view| view.result_preview)
+            {
+                self.cancel_conflict_preview();
+                self.refresh_diff();
+                return false;
+            }
         }
         if key.code == KeyCode::Char('f')
             && matches!(self.focus, Focus::Status | Focus::Diff)
@@ -3795,6 +3727,7 @@ impl App {
             {
                 self.move_graph_popup_option(true)
             }
+            KeyCode::BackTab if self.modal_closed() => self.cycle_panel_focus(false),
             KeyCode::Tab => {
                 if self.abort_rebase_popup {
                     self.commit_field = if self.commit_field == CommitField::Commit {
@@ -3827,32 +3760,21 @@ impl App {
                     }
                     return false;
                 }
-                self.focus = match self.focus {
-                    Focus::Status => Focus::Graph,
-                    // The details pane is focusable so long commit messages can
-                    // be scrolled; skip it when the local-changes row is selected.
-                    Focus::Graph if self.historical_commit.is_some() => Focus::Details,
-                    Focus::Graph => Focus::Diff,
-                    Focus::Details => Focus::Diff,
-                    Focus::Diff => {
-                        self.ensure_status_selection();
-                        Focus::Status
+                if self.focus != Focus::Commit {
+                    self.cycle_panel_focus(true);
+                    return false;
+                }
+                self.commit_field = if self.commit_confirm {
+                    match self.commit_field {
+                        CommitField::Commit => CommitField::Cancel,
+                        _ => CommitField::Commit,
                     }
-                    Focus::Commit => {
-                        self.commit_field = if self.commit_confirm {
-                            match self.commit_field {
-                                CommitField::Commit => CommitField::Cancel,
-                                _ => CommitField::Commit,
-                            }
-                        } else {
-                            match self.commit_field {
-                                CommitField::Title => CommitField::Description,
-                                CommitField::Description => CommitField::Commit,
-                                CommitField::Commit => CommitField::Cancel,
-                                CommitField::Cancel => CommitField::Title,
-                            }
-                        };
-                        Focus::Commit
+                } else {
+                    match self.commit_field {
+                        CommitField::Title => CommitField::Description,
+                        CommitField::Description => CommitField::Commit,
+                        CommitField::Commit => CommitField::Cancel,
+                        CommitField::Cancel => CommitField::Title,
                     }
                 };
             }
@@ -4173,6 +4095,8 @@ impl App {
                     && self.commit_actions_available()
                     && self.rebase_edit.is_none() =>
             {
+                self.graph_visible = true;
+                self.maximized = false;
                 self.pending_fixup = true;
                 self.fixup_origin = self.selected_graph;
                 self.focus = Focus::Graph;
@@ -4296,7 +4220,9 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.scroll_y = self.scroll_y.saturating_add(1),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_y = self.scroll_y.saturating_sub(1),
+            KeyCode::Char('z') if self.modal_closed() => self.maximized = !self.maximized,
             KeyCode::Char('g') => {
+                self.maximized = false;
                 self.graph_visible = !self.graph_visible;
                 if !self.graph_visible && self.focus == Focus::Graph {
                     self.focus = Focus::Status;
@@ -4323,16 +4249,8 @@ impl App {
     fn handle_remote_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('q') => true,
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Status => Focus::Graph,
-                    Focus::Graph => {
-                        self.ensure_status_selection();
-                        Focus::Status
-                    }
-                    Focus::Diff | Focus::Details => Focus::Graph,
-                    Focus::Commit => Focus::Graph,
-                };
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.cycle_panel_focus(key.code == KeyCode::Tab);
                 false
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -4423,34 +4341,32 @@ impl App {
         if !self.staging_area.contains(position) {
             return;
         }
-        if self.historical_commit.is_some() {
-            let pane = self.staging_area;
-            if !pane.contains(position) {
-                return;
-            }
-            self.focus = Focus::Status;
-            self.status_section = StatusSection::Unstaged;
-            let row = y.saturating_sub(pane.y + 1) as usize;
-            if row < self.status.len() {
-                self.selected_status = row;
-                self.selected_statuses.clear();
-                self.selected_statuses.insert(row);
-                self.refresh_diff();
-            }
+        let (section, pane, indices) = if self.historical_commit.is_some() {
+            (
+                StatusSection::Unstaged,
+                self.staging_area,
+                (0..self.status.len()).collect::<Vec<_>>(),
+            )
+        } else {
+            let panes = self.staging_panes(self.staging_area);
+            let (section, pane) = if panes[0].contains(position) {
+                (StatusSection::Unstaged, panes[0])
+            } else {
+                (StatusSection::Staged, panes[1])
+            };
+            (section, pane, self.section_indices(section).to_vec())
+        };
+        let inner = pane.inner(Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
+        if !inner.contains(position) {
             return;
         }
-        let panes = Layout::vertical([Constraint::Percentage(50), Constraint::Min(0)])
-            .split(self.staging_area);
-        let (section, pane) = if panes[0].contains(position) {
-            (StatusSection::Unstaged, panes[0])
-        } else {
-            (StatusSection::Staged, panes[1])
-        };
-        self.focus = Focus::Status;
-        self.status_section = section;
-        let row = y.saturating_sub(pane.y + 1) as usize;
-        let indices = self.section_indices(section);
+        let row = (y - inner.y) as usize + self.status_list_scroll(&indices, pane);
         if let Some(&index) = indices.get(row) {
+            self.focus = Focus::Status;
+            self.status_section = section;
             self.selected_status = index;
             self.selected_statuses.clear();
             self.selected_statuses.insert(index);
@@ -4459,6 +4375,9 @@ impl App {
     }
 
     fn handle_mouse_scroll(&mut self, x: u16, y: u16, delta: i32) {
+        if !self.modal_closed() {
+            return;
+        }
         let position = Position { x, y };
         if self.diff_area.contains(position) {
             if let Some(view) = &mut self.three_way_view {
@@ -4494,6 +4413,9 @@ mod render;
 
 #[path = "app/workflows.rs"]
 mod workflows;
+
+#[path = "app/presentation.rs"]
+mod presentation;
 
 /// Query the terminal background and ANSI palette. The palette lets dimmed
 /// graph colors retain the user's theme hue while using a darker RGB shade.

@@ -69,8 +69,9 @@ figit --version
 
 | Key | Action |
 | --- | --- |
-| `Tab` | Cycle focus between panels |
+| `Tab` / `Shift+Tab` | Focus the next / previous panel |
 | `g` | Toggle the graph pane |
+| `z` | Maximize / restore the focused panel |
 | `j` / `k` (or `↑` / `↓`) | Move the selection / scroll |
 | `/` | Search commits: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
 | `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
@@ -100,6 +101,17 @@ Local branches whose configured upstream no longer exists are marked with `✗`.
 
 ### Staging and diff
 
+Hide the graph with `g` for a full-width diff below side-by-side Unstaged and
+Staged lists. When inspecting a commit, Changes and Commit Details occupy the
+top row. Empty lists shrink without moving the diff boundary; `Tab` follows
+these panels from left to right, then moves to the diff. Use `z` to maximize
+any focused panel. Selection, diff mode, and scroll position carry across layouts
+(scroll is clamped when the visible area grows).
+
+The header shows the repository, branch, and working-tree state. Contextual keys
+appear along the bottom; `?` opens the full shortcut reference. Colors adapt to
+the terminal background, and selection markers remain visible with `NO_COLOR`.
+
 | Key | Action |
 | --- | --- |
 | `Space` | Stage/unstage the selected file, hunk, or line |
@@ -114,13 +126,18 @@ Local branches whose configured upstream no longer exists are marked with `✗`.
 | `←` / `→` | Pan the diff horizontally |
 | `L` | Load the full diff when a large diff was truncated |
 
+In file mode, `f` from staging starts fixup target selection; `Enter` confirms
+the selected commit and `Esc` cancels back to staging.
+
 ### Conflict resolver
 
 | Key | Action |
 | --- | --- |
-| `o` / `t` / `b` | Take Ours / Theirs / Base |
+| `o` / `t` | Preview Ours / Theirs for the selected hunk (or whole file when no text hunk exists) |
+| `b` | Preview restoring the entire file from Base |
 | `e` | Open the file in `$VISUAL` / `$EDITOR` |
-| `Enter` | Confirm the previewed result |
+| `Enter` | Confirm the previewed result (including deletion when the chosen side has no file) |
+| `Esc` | Cancel the preview without changing the file |
 | `[` / `]`, `h` / `l` | Switch hunk, pan |
 
 ### Stash manager (`s`)

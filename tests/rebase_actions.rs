@@ -2246,3 +2246,47 @@ fn rebase_onto_conflict_leaves_the_rebase_in_progress_until_aborted() {
         "feature"
     );
 }
+
+#[test]
+fn unborn_unstage_preserves_edits_made_after_staging() {
+    let repository = common::review_fixture("unborn");
+    let backend = backend::open(repository.path()).unwrap();
+    backend.unstage(&GitPath::from("file.txt")).unwrap();
+    assert!(git_ok(repository.path(), &["ls-files"]).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("file.txt")).unwrap(),
+        "edited after staging\n"
+    );
+    assert_eq!(
+        git_ok(repository.path(), &["status", "--porcelain"]),
+        "?? file.txt"
+    );
+}
+
+#[test]
+fn choosing_a_missing_conflict_stage_resolves_as_deletion() {
+    for (scenario, side) in [
+        ("modify-delete", ConflictSide::Theirs),
+        ("delete-modify", ConflictSide::Ours),
+    ] {
+        let repository = common::review_fixture(scenario);
+        let backend = backend::open(repository.path()).unwrap();
+        backend
+            .resolve_conflict(&GitPath::from("file.txt"), side)
+            .unwrap();
+        assert!(!repository.path().join("file.txt").exists());
+        assert!(git_ok(repository.path(), &["ls-files", "--unmerged"]).is_empty());
+        assert!(git_ok(repository.path(), &["ls-files"]).is_empty());
+    }
+}
+
+#[test]
+fn conflict_file_read_errors_are_not_reported_as_deletion() {
+    let repository = common::review_fixture("conflict");
+    std::fs::remove_file(repository.path().join("file.txt")).unwrap();
+    std::fs::create_dir(repository.path().join("file.txt")).unwrap();
+    let backend = backend::open(repository.path()).unwrap();
+    assert!(backend
+        .conflict_versions(&GitPath::from("file.txt"))
+        .is_err());
+}

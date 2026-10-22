@@ -57,11 +57,12 @@ impl App {
                 unreachable!("rebase actions are handled above")
             }
         };
-        if backend
-            .commit(&self.commit_title, &self.commit_description, amend, fixup)
-            .is_ok()
-        {
-            self.reload_after_commit();
+        match backend.commit(&self.commit_title, &self.commit_description, amend, fixup) {
+            Ok(()) => {
+                self.reload_after_commit();
+                self.remote_notice = Some(("Commit created".into(), Instant::now()));
+            }
+            Err(error) => self.action_error = Some(error.to_string()),
         }
     }
 
@@ -119,6 +120,7 @@ impl App {
     }
 
     pub(super) fn open_stash_manager(&mut self) {
+        self.pending_fixup = false;
         if self.rebase_active || self.three_way_view.is_some() {
             self.show_git_error(
                 "Finish or abort the active conflict/rebase before managing stashes.".into(),
@@ -323,6 +325,7 @@ impl App {
         title: String,
         description: String,
     ) {
+        self.pending_fixup = false;
         self.commit_mode = mode;
         self.action_error = None;
         self.commit_title = title;
@@ -348,6 +351,7 @@ impl App {
     }
 
     pub(super) fn open_edit_confirmation(&mut self) {
+        self.pending_fixup = false;
         let Some(commit) = self.selected_rebase_commit() else {
             self.action_error = Some(self.rebase_selection_error().to_string());
             return;
@@ -365,6 +369,7 @@ impl App {
     }
 
     pub(super) fn open_abort_rebase_confirmation(&mut self) {
+        self.pending_fixup = false;
         self.rebase_active = self
             .backend
             .as_ref()
@@ -381,6 +386,7 @@ impl App {
     }
 
     pub(super) fn open_rebase_replacement_popup(&mut self) {
+        self.pending_fixup = false;
         let Some(state) = self.rebase_edit.as_ref() else {
             return;
         };
@@ -496,6 +502,7 @@ impl App {
     }
 
     pub(super) fn open_rebase_plan(&mut self) {
+        self.pending_fixup = false;
         let Some(commit) = self.selected_rebase_commit() else {
             self.action_error = Some(self.rebase_selection_error().to_string());
             return;
@@ -809,6 +816,7 @@ impl App {
     }
 
     pub(super) fn open_graph_action(&mut self, action: GraphAction) {
+        self.pending_fixup = false;
         if self.selected_commit_id().is_none() {
             self.show_git_error("Select a commit row before running this action".into());
             return;
@@ -832,6 +840,7 @@ impl App {
     }
 
     pub(super) fn open_undo_popup(&mut self) {
+        self.pending_fixup = false;
         let Some(backend) = self.backend.as_ref() else {
             return;
         };
@@ -853,6 +862,7 @@ impl App {
     }
 
     pub(super) fn open_search_popup(&mut self) {
+        self.pending_fixup = false;
         self.search_popup = Some(SearchPopupState {
             query: String::new(),
             cursor: 0,
@@ -1010,6 +1020,7 @@ impl App {
     }
 
     pub(super) fn open_remote_action(&mut self, for_push: bool) {
+        self.pending_fixup = false;
         let Some(backend) = self.backend.as_ref() else {
             return;
         };
@@ -1825,6 +1836,8 @@ impl App {
             complete,
         } = snapshot;
         if graph == self.graph && local_status == self.local_status {
+            // Porcelain status records change kinds, not file contents.
+            self.refresh_visible_content();
             return;
         }
         let graph_display_refs = graph.display_refs_by_commit();
@@ -1850,7 +1863,14 @@ impl App {
             .map(|entry| entry.path.clone());
         let old_section = self.status_section;
         let old_selected_graph = self.selected_graph;
-        let historical = self.historical_commit.clone();
+        let historical = self.historical_commit.as_ref().and_then(|id| {
+            if graph.commits.iter().any(|commit| &commit.id == id) {
+                Some(id.clone())
+            } else {
+                graph.head_id.clone()
+            }
+        });
+        let historical_changed = historical != self.historical_commit;
         let focus = self.focus;
 
         self.conflict_commits = if local_status.iter().any(StatusEntry::is_conflict) {
@@ -1874,6 +1894,12 @@ impl App {
             self.local_status.clone()
         };
         self.historical_commit = historical;
+        if historical_changed {
+            self.details_scroll = 0;
+            self.graph_details_deadline = None;
+            self.details_loading = false;
+            self.details_error = None;
+        }
         self.rebase_active = backend.rebase_in_progress().unwrap_or(self.rebase_active);
 
         let local_offset = usize::from(!self.local_status.is_empty());
@@ -2013,6 +2039,43 @@ impl App {
         }
     }
 
+    pub(super) fn status_list_scroll(&self, indices: &[usize], area: Rect) -> usize {
+        let viewport = area.height.saturating_sub(2) as usize;
+        indices
+            .iter()
+            .position(|&i| i == self.selected_status)
+            .unwrap_or(0)
+            .saturating_sub(viewport.saturating_sub(1))
+            .min(u16::MAX as usize)
+    }
+
+    /// Refresh working contents without rebuilding graph selection or jumping
+    /// away from the user's current viewport on every save.
+    pub(super) fn refresh_visible_content(&mut self) {
+        if self.historical_commit.is_some() && self.three_way_view.is_none() {
+            return;
+        }
+        let scroll = self.diff_scroll;
+        let horizontal = self.diff_scroll_x;
+        self.refresh_diff();
+        self.ensure_diff_layout();
+        let rows = self.diff_cache.as_ref().map_or(0, |(_, rows)| rows.len());
+        let viewport = self.diff_area.height.saturating_sub(2) as usize;
+        self.diff_scroll =
+            scroll.min(rows.saturating_sub(viewport.max(1)).min(u16::MAX as usize) as u16);
+        self.diff_scroll_x = horizontal.min(self.diff_max_scroll_x());
+        if let Some(view) = self.three_way_view.as_mut() {
+            let rows = view
+                .rows
+                .len()
+                .max(view.ours_diff.len())
+                .max(view.theirs_diff.len())
+                .max(view.result_diff.len());
+            view.scroll_y = view.scroll_y.min(rows.saturating_sub(1));
+        }
+        self.refresh_diff_stats();
+    }
+
     pub(super) fn move_status_selection(&mut self, delta: i32, extend: bool) {
         if self.historical_commit.is_some() {
             if self.status.is_empty() {
@@ -2112,68 +2175,77 @@ impl App {
             .map(|entry| entry.path.clone())
     }
 
+    pub(super) fn cancel_conflict_preview(&mut self) {
+        if let Some(view) = self.three_way_view.as_mut() {
+            view.pending_resolution = None;
+            view.result_preview = false;
+            view.chosen_side = None;
+        }
+    }
+
     pub(super) fn choose_selected_conflict_side(&mut self, side: ConflictSide) {
         let Some(path) = self.selected_conflict_path() else {
             return;
         };
-        let hunk_choice = self
-            .three_way_view
-            .as_ref()
-            .filter(|view| view.path == path)
-            .and_then(|view| {
-                let working = String::from_utf8_lossy(&view.working);
-                let hunks = conflict_hunks(&working);
-                (!hunks.is_empty() && side != ConflictSide::Base).then(|| {
-                    replace_conflict_hunk(&working, view.hunk_index, side).map(String::into_bytes)
-                })
-            });
-        if let Some(candidate) = hunk_choice {
-            match candidate {
-                Some(candidate) => {
-                    if let Some(view) = self
-                        .three_way_view
-                        .as_mut()
-                        .filter(|view| view.path == path)
-                    {
-                        view.pending_working = Some(candidate);
-                        view.result_preview = true;
-                        view.chosen_side = Some(side);
-                        view.scroll_y = match side {
-                            ConflictSide::Ours => {
-                                diff_hunk_scroll(&view.ours_diff, view.hunk_index)
-                            }
-                            ConflictSide::Theirs => {
-                                diff_hunk_scroll(&view.theirs_diff, view.hunk_index)
-                            }
-                            ConflictSide::Base => None,
-                        }
-                        .unwrap_or(0);
-                    }
-                    self.refresh_diff();
-                }
-                None => self.action_error = Some("No conflict hunk is selected".into()),
-            }
-            return;
-        }
-
         let Some(backend) = self.backend.as_ref() else {
             return;
         };
-        match backend.choose_conflict_side(&path, side) {
-            Ok(()) => {
-                if let Some(view) = self
-                    .three_way_view
-                    .as_mut()
-                    .filter(|view| view.path == path)
-                {
-                    view.pending_working = None;
-                    view.result_preview = true;
-                    view.chosen_side = Some(side);
-                }
-                self.refresh_diff();
+        let versions = match backend.conflict_versions(&path) {
+            Ok(Some(versions)) => versions,
+            Ok(None) => {
+                self.show_rebase_error(
+                    "Conflict versions are unavailable; refresh or use an external editor.".into(),
+                );
+                return;
             }
-            Err(error) => self.show_rebase_error(error.to_string()),
+            Err(error) => {
+                self.show_rebase_error(error.to_string());
+                return;
+            }
+        };
+        let Some(view) = self
+            .three_way_view
+            .as_mut()
+            .filter(|view| view.path == path)
+        else {
+            return;
+        };
+        let selected = match side {
+            ConflictSide::Base => versions.base,
+            ConflictSide::Ours => versions.ours,
+            ConflictSide::Theirs => versions.theirs,
+        };
+        let mut resolution =
+            selected.map_or(ConflictResolution::Delete, ConflictResolution::Content);
+        // Missing stages mean deletion. Base always restores the whole file;
+        // ours/theirs replace just the selected text hunk when one is present.
+        if side != ConflictSide::Base && resolution.content().is_some() {
+            if let Some(text) = versions
+                .working
+                .as_deref()
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            {
+                if !conflict_hunks(text).is_empty() {
+                    let Some(candidate) = replace_conflict_hunk(text, view.hunk_index, side) else {
+                        self.action_error = Some("No conflict hunk is selected".into());
+                        return;
+                    };
+                    resolution = ConflictResolution::Content(candidate.into_bytes());
+                }
+            }
         }
+        view.result_missing = versions.working.is_none();
+        view.working = versions.working.unwrap_or_default();
+        view.pending_resolution = Some(resolution);
+        view.result_preview = true;
+        view.chosen_side = Some(side);
+        view.scroll_y = match side {
+            ConflictSide::Ours => diff_hunk_scroll(&view.ours_diff, view.hunk_index),
+            ConflictSide::Theirs => diff_hunk_scroll(&view.theirs_diff, view.hunk_index),
+            ConflictSide::Base => Some(0),
+        }
+        .unwrap_or(0);
+        self.refresh_diff();
     }
 
     pub(super) fn confirm_selected_conflict_result(&mut self) {
@@ -2188,19 +2260,40 @@ impl App {
         let Some(backend) = self.backend.as_ref() else {
             return;
         };
-        let pending_working = view.pending_working.clone();
-        if let Some(working) = pending_working.as_deref() {
-            if let Err(error) = backend.write_conflict_result(&path, working) {
+        let result = (|| -> Result<Vec<u8>> {
+            let current = backend.conflict_versions(&path)?.ok_or_else(|| {
+                anyhow::anyhow!("Conflict versions are unavailable; resolution was not staged.")
+            })?;
+            let expected = (!view.result_missing).then_some(view.working.as_slice());
+            if current.working.as_deref() != expected {
+                anyhow::bail!("Conflict file changed; preview cancelled. Review the current contents before confirming.");
+            }
+            if let Some(resolution) = view.pending_resolution.as_ref() {
+                let whole_file_side = view.chosen_side.filter(|side| {
+                    *side != ConflictSide::Base
+                        && std::str::from_utf8(&view.working)
+                            .map_or(true, |text| conflict_hunks(text).is_empty())
+                });
+                if let Some(side) = whole_file_side {
+                    backend.choose_conflict_side(&path, side)?;
+                } else {
+                    backend.write_conflict_result(&path, resolution)?;
+                }
+            }
+            let updated = backend.conflict_versions(&path)?.ok_or_else(|| {
+                anyhow::anyhow!("Could not verify the conflict result; resolution was not staged.")
+            })?;
+            Ok(updated.working.unwrap_or_default())
+        })();
+        let current_working = match result {
+            Ok(working) => working,
+            Err(error) => {
+                self.cancel_conflict_preview();
+                self.refresh_diff();
                 self.show_rebase_error(error.to_string());
                 return;
             }
-        }
-        let current_working = backend
-            .conflict_versions(&path)
-            .ok()
-            .flatten()
-            .and_then(|versions| versions.working)
-            .unwrap_or_default();
+        };
         let remaining_hunks = conflict_hunks(&String::from_utf8_lossy(&current_working)).len();
         if remaining_hunks > 0 {
             if let Some(view) = self
@@ -2209,7 +2302,7 @@ impl App {
                 .filter(|view| view.path == path)
             {
                 view.working = current_working;
-                view.pending_working = None;
+                view.pending_resolution = None;
                 view.hunk_index = view.hunk_index.min(remaining_hunks - 1);
                 view.result_preview = false;
                 view.chosen_side = None;
@@ -2218,7 +2311,7 @@ impl App {
                     .unwrap_or(0);
             }
             self.refresh_diff();
-        } else {
+        } else if let Some(backend) = self.backend.as_ref() {
             match backend.stage(&path) {
                 Ok(()) => self.focus_after_conflict_resolution(&path),
                 Err(error) => self.show_rebase_error(error.to_string()),
@@ -2239,7 +2332,7 @@ impl App {
         } else {
             (view.hunk_index + 1) % count
         };
-        view.pending_working = None;
+        view.pending_resolution = None;
         view.result_preview = false;
         view.chosen_side = None;
         view.scroll_y = diff_hunk_scroll(&view.ours_diff, view.hunk_index)
@@ -2336,7 +2429,13 @@ impl App {
     /// The furthest the focused diff can be panned horizontally, based on its
     /// widest line and the current pane width.
     fn diff_max_scroll_x(&self) -> u16 {
-        let width = usize::from(self.diff_area.width.saturating_sub(2));
+        let width = usize::from(self.diff_area.width.saturating_sub(
+            if self.hunk_mode || self.line_mode {
+                4
+            } else {
+                2
+            },
+        ));
         if width == 0 || self.diff_lines.is_empty() {
             return 0;
         }
@@ -2720,6 +2819,7 @@ impl App {
     }
 
     pub(super) fn open_selected_conflict_editor(&mut self) {
+        self.pending_fixup = false;
         if let Some(path) = self.selected_conflict_path() {
             self.pending_conflict_editor = Some(path);
         }
@@ -2760,6 +2860,7 @@ impl App {
         terminal: &mut ratatui::DefaultTerminal,
         path: &GitPath,
     ) -> Result<()> {
+        self.cancel_conflict_preview();
         terminal.hide_cursor()?;
         crossterm::terminal::disable_raw_mode()?;
         execute!(
@@ -2787,6 +2888,7 @@ impl App {
         restore_result?;
         edit_result?;
 
+        self.refresh_diff();
         if let Some(view) = self
             .three_way_view
             .as_mut()
@@ -2795,7 +2897,6 @@ impl App {
             view.result_preview = true;
             view.chosen_side = None;
         }
-        self.refresh_diff();
         Ok(())
     }
 }
