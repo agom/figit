@@ -1131,6 +1131,9 @@ fn file_staging_switches_sections_when_the_source_list_becomes_empty() {
     tui.send(b" ");
     tui.wait_for("Staged (0)");
     tui.wait_for("Unstaged (1)");
+    // The footer hint follows the section switch, which can land a frame after
+    // the list counts on slow runners.
+    tui.wait_for("Space stage file");
     let screen = tui.contents();
     assert!(
         screen.contains("Space stage file"),
