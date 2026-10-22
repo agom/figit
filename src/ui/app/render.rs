@@ -337,7 +337,7 @@ impl App {
                     ("?", "toggle this help"),
                     ("U", "check/install update"),
                     ("q", "quit"),
-                    ("Esc", "close popup"),
+                    ("Esc", "close popup / cancel selection"),
                 ],
             ),
             (
@@ -380,9 +380,11 @@ impl App {
             (
                 "Conflicts",
                 &[
-                    ("o / t / b", "ours / theirs / base"),
+                    ("o / t", "preview ours / theirs"),
+                    ("b", "preview entire file from Base"),
                     ("e", "open in editor"),
                     ("Enter", "confirm result"),
+                    ("Esc", "cancel preview"),
                     ("[ / ]", "switch hunk"),
                     ("h / l", "pan"),
                 ],
@@ -542,6 +544,7 @@ impl App {
         let mut actions = vec![("o/t/b", "choose"), ("[/]", "hunk"), ("e", "edit")];
         if view.result_preview {
             actions.push(("Enter", "confirm result"));
+            actions.push(("Esc", "cancel preview"));
         }
         // Panning and scrolling only work while the diff pane is focused.
         if self.focus == Focus::Diff {
@@ -671,18 +674,23 @@ impl App {
             sides[1],
         );
 
-        let result_title = if view.result_preview {
-            match view.chosen_side {
-                Some(ConflictSide::Ours) => "Result vs Base — Ours",
-                Some(ConflictSide::Theirs) => "Result vs Base — Theirs",
-                Some(ConflictSide::Base) => "Result vs Base — Base",
-                None => "Result vs Base — Edited",
-            }
-        } else if view.result_missing {
-            "Result (deleted)"
-        } else {
-            "Result (conflict markers)"
-        };
+        let result_title =
+            if view.result_preview && view.pending_resolution == Some(ConflictResolution::Delete) {
+                "Delete entire file — Enter confirm · Esc cancel"
+            } else if view.result_preview {
+                match view.chosen_side {
+                    Some(ConflictSide::Ours) => "Result vs Base — Ours",
+                    Some(ConflictSide::Theirs) => "Result vs Base — Theirs",
+                    Some(ConflictSide::Base) => {
+                        "Restore entire file from Base — Enter confirm · Esc cancel"
+                    }
+                    None => "Result vs Base — Edited",
+                }
+            } else if view.result_missing {
+                "Result (deleted)"
+            } else {
+                "Result (conflict markers)"
+            };
         let result_block = Block::default()
             .borders(Borders::ALL)
             .title(result_title)
@@ -1126,27 +1134,15 @@ impl App {
             );
             return;
         }
-        let staged: Vec<usize> = self
-            .status
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| {
-                (!e.is_conflict() && e.index != ' ' && e.index != '?').then_some(i)
-            })
-            .collect();
-        let unstaged: Vec<usize> = self
-            .status
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| (e.worktree != ' ' || e.index == '?').then_some(i))
-            .collect();
+        let staged = self.section_indices(StatusSection::Staged);
+        let unstaged = self.section_indices(StatusSection::Unstaged);
 
         let panes = Layout::vertical([Constraint::Percentage(50), Constraint::Min(0)]).split(area);
         self.render_status_section(
             f,
             panes[0],
             "Unstaged",
-            &unstaged,
+            unstaged,
             Color::LightYellow,
             StatusSection::Unstaged,
         );
@@ -1154,7 +1150,7 @@ impl App {
             f,
             panes[1],
             "Staged",
-            &staged,
+            staged,
             Color::LightGreen,
             StatusSection::Staged,
         );
@@ -2005,12 +2001,7 @@ impl App {
             block = block.title_bottom(hints);
         }
         let viewport = area.height.saturating_sub(2) as usize;
-        let scroll = self
-            .section_indices(section)
-            .iter()
-            .position(|&i| i == self.selected_status)
-            .unwrap_or(0)
-            .saturating_sub(viewport.saturating_sub(1));
+        let scroll = self.status_list_scroll(indices, area);
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((scroll as u16, 0))
@@ -2387,6 +2378,12 @@ impl App {
                 ),
                 Style::default().fg(Color::LightYellow),
             )]);
+        }
+        if self.pending_fixup {
+            return Line::from(Span::styled(
+                "Choose fixup target · Enter confirm · Esc cancel",
+                Style::default().fg(Color::LightYellow),
+            ));
         }
         if self.details_loading {
             return Line::from(Span::styled(

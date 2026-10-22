@@ -27,9 +27,9 @@ use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
 use crate::backend::{
-    ConflictCommits, ConflictSide, DiffLineSelection, DiffTarget, GitBackend, GraphWindow,
-    PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock, RebasePlanEntry,
-    RebaseTodoAction, StashEntry, UndoInfo,
+    ConflictCommits, ConflictResolution, ConflictSide, DiffLineSelection, DiffTarget, GitBackend,
+    GraphWindow, PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock,
+    RebasePlanEntry, RebaseTodoAction, StashEntry, UndoInfo,
 };
 use crate::core::model::{
     BranchTracking, Commit, DisplayRef, GitPath, GraphModel, RefKind, StatusEntry,
@@ -2199,7 +2199,7 @@ struct ThreeWayView {
     theirs_diff: Vec<DiffLine>,
     result_diff: Vec<DiffLine>,
     working: Vec<u8>,
-    pending_working: Option<Vec<u8>>,
+    pending_resolution: Option<ConflictResolution>,
     result_preview: bool,
     chosen_side: Option<ConflictSide>,
     hunk_index: usize,
@@ -2807,7 +2807,7 @@ impl App {
                         theirs_diff: conflict_result_diff(&base, &theirs, "Theirs"),
                         result_diff: conflict_result_diff(&base, &result, "Result"),
                         working,
-                        pending_working: None,
+                        pending_resolution: None,
                         result_preview: false,
                         chosen_side: None,
                         hunk_index: 0,
@@ -2821,14 +2821,20 @@ impl App {
                         .as_ref()
                         .filter(|previous| previous.path == path)
                     {
-                        view.result_preview = previous.result_preview;
-                        view.chosen_side = previous.chosen_side;
-                        view.pending_working = previous.pending_working.clone();
+                        let unchanged = previous.working == view.working
+                            && previous.result_missing == view.result_missing;
+                        if unchanged {
+                            view.result_preview = previous.result_preview;
+                            view.chosen_side = previous.chosen_side;
+                            view.pending_resolution = previous.pending_resolution.clone();
+                        } else if previous.result_preview {
+                            self.action_error = Some("Conflict file changed; preview cancelled. Review the current contents before confirming.".into());
+                        }
                         view.hunk_index = previous.hunk_index;
                         view.scroll_y = previous.scroll_y;
                         view.scroll_x = previous.scroll_x;
-                        if let Some(pending) = view.pending_working.as_deref() {
-                            let result = String::from_utf8_lossy(pending);
+                        if let Some(pending) = view.pending_resolution.as_ref() {
+                            let result = String::from_utf8_lossy(pending.content().unwrap_or_default());
                             view.result_diff = conflict_result_diff(&base, &result, "Result");
                         }
                         let hunk_count =
@@ -3358,6 +3364,10 @@ impl App {
                 _ => None,
             };
             if let Some(delta) = delta {
+                if !self.modal_closed() {
+                    *wheel = None;
+                    return false;
+                }
                 match wheel {
                     Some((x, y, total)) if *x == mouse.column && *y == mouse.row => {
                         *total += delta;
@@ -3376,15 +3386,7 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event) -> bool {
-        if self.graph_action.is_some()
-            || self.commit_popup
-            || self.abort_rebase_popup
-            || self.rebase_plan.is_some()
-            || self.error_popup.is_some()
-            || self.stash_popup.is_some()
-            || self.help_popup
-            || self.search_popup.is_some()
-        {
+        if !self.modal_closed() {
             return match event {
                 Event::Key(key) => self.handle_key(key),
                 // Popups are modal: mouse input must not affect panels behind them.
@@ -3420,7 +3422,14 @@ impl App {
 
     /// True when no modal popup is capturing input.
     fn modal_closed(&self) -> bool {
-        self.graph_action.is_none() && !self.commit_popup && !self.abort_rebase_popup
+        self.graph_action.is_none()
+            && !self.commit_popup
+            && !self.abort_rebase_popup
+            && self.rebase_plan.is_none()
+            && self.error_popup.is_none()
+            && self.stash_popup.is_none()
+            && !self.help_popup
+            && self.search_popup.is_none()
     }
 
     /// Returns `true` when the app should quit.
@@ -3501,6 +3510,27 @@ impl App {
         if self.rebase_plan.is_some() && !self.commit_popup && !self.abort_rebase_popup {
             self.handle_rebase_plan_key(key);
             return false;
+        }
+        if key.code == KeyCode::Esc && self.modal_closed() {
+            if self.pending_fixup {
+                self.pending_fixup = false;
+                if !self.local_status.is_empty() {
+                    self.select_graph_index(0);
+                }
+                self.focus = Focus::Status;
+                self.status_section = StatusSection::Staged;
+                self.ensure_status_selection();
+                return false;
+            }
+            if self
+                .three_way_view
+                .as_ref()
+                .is_some_and(|view| view.result_preview)
+            {
+                self.cancel_conflict_preview();
+                self.refresh_diff();
+                return false;
+            }
         }
         if key.code == KeyCode::Char('f')
             && matches!(self.focus, Focus::Status | Focus::Diff)
@@ -4423,34 +4453,33 @@ impl App {
         if !self.staging_area.contains(position) {
             return;
         }
-        if self.historical_commit.is_some() {
-            let pane = self.staging_area;
-            if !pane.contains(position) {
-                return;
-            }
-            self.focus = Focus::Status;
-            self.status_section = StatusSection::Unstaged;
-            let row = y.saturating_sub(pane.y + 1) as usize;
-            if row < self.status.len() {
-                self.selected_status = row;
-                self.selected_statuses.clear();
-                self.selected_statuses.insert(row);
-                self.refresh_diff();
-            }
+        let (section, pane, indices) = if self.historical_commit.is_some() {
+            (
+                StatusSection::Unstaged,
+                self.staging_area,
+                (0..self.status.len()).collect::<Vec<_>>(),
+            )
+        } else {
+            let panes = Layout::vertical([Constraint::Percentage(50), Constraint::Min(0)])
+                .split(self.staging_area);
+            let (section, pane) = if panes[0].contains(position) {
+                (StatusSection::Unstaged, panes[0])
+            } else {
+                (StatusSection::Staged, panes[1])
+            };
+            (section, pane, self.section_indices(section).to_vec())
+        };
+        let inner = pane.inner(Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
+        if !inner.contains(position) {
             return;
         }
-        let panes = Layout::vertical([Constraint::Percentage(50), Constraint::Min(0)])
-            .split(self.staging_area);
-        let (section, pane) = if panes[0].contains(position) {
-            (StatusSection::Unstaged, panes[0])
-        } else {
-            (StatusSection::Staged, panes[1])
-        };
-        self.focus = Focus::Status;
-        self.status_section = section;
-        let row = y.saturating_sub(pane.y + 1) as usize;
-        let indices = self.section_indices(section);
+        let row = (y - inner.y) as usize + self.status_list_scroll(&indices, pane);
         if let Some(&index) = indices.get(row) {
+            self.focus = Focus::Status;
+            self.status_section = section;
             self.selected_status = index;
             self.selected_statuses.clear();
             self.selected_statuses.insert(index);
@@ -4459,6 +4488,9 @@ impl App {
     }
 
     fn handle_mouse_scroll(&mut self, x: u16, y: u16, delta: i32) {
+        if !self.modal_closed() {
+            return;
+        }
         let position = Position { x, y };
         if self.diff_area.contains(position) {
             if let Some(view) = &mut self.three_way_view {

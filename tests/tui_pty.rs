@@ -2267,6 +2267,9 @@ fn conflict_resolver_can_open_the_external_editor() {
     let editor_command = format!("sh {}", editor.display());
     let mut tui = Tui::launch_with_editor(repository.path(), Some(&editor_command));
     tui.wait_for("Three-way merge — file.txt");
+    // A pending side preview must not overwrite the editor's saved result.
+    tui.send(b"t");
+    tui.wait_for("Result vs Base — Theirs");
     tui.send(b"e");
     tui.wait_for("Result vs Base — Edited");
     tui.wait_for("Staged (0)");
@@ -2388,6 +2391,19 @@ fn conflict_hunks_can_be_chosen_and_confirmed_individually() {
     );
     assert!(!after_first.contains("second theirs"));
 
+    tui.send(b"b");
+    tui.wait_for("Restore entire file from Base");
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("file.txt")).unwrap(),
+        after_first,
+        "Base must not erase the already-resolved hunk before confirmation"
+    );
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Restore entire file from Base");
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("file.txt")).unwrap(),
+        after_first
+    );
     tui.send(b"t");
     tui.wait_for("Result vs Base — Theirs");
     tui.send(b"\r");
@@ -2966,4 +2982,68 @@ fn generate_readme_screenshots() {
     tui.wait_for("Stashes (1)");
     capture_render(&tui, "assets/screenshot-stash.png");
     drop(tui);
+}
+
+#[test]
+fn missing_conflict_sides_preview_and_confirm_deletion() {
+    for (scenario, key) in [("modify-delete", b"t"), ("delete-modify", b"o")] {
+        let repository = common::review_fixture(scenario);
+        let original = std::fs::read(repository.path().join("file.txt")).unwrap();
+        let mut tui = Tui::launch(repository.path());
+        tui.wait_for("Three-way merge — file.txt");
+        tui.send(key);
+        tui.wait_for("Delete entire file");
+        assert_eq!(
+            std::fs::read(repository.path().join("file.txt")).unwrap(),
+            original
+        );
+        tui.send(b"\x1b");
+        tui.wait_until_hidden("Delete entire file");
+        assert_eq!(
+            std::fs::read(repository.path().join("file.txt")).unwrap(),
+            original
+        );
+        tui.send(key);
+        tui.wait_for("Delete entire file");
+        tui.send(b"\r");
+        tui.wait_until_hidden("Three-way merge — file.txt");
+        assert!(!repository.path().join("file.txt").exists());
+        assert!(git_ok(repository.path(), &["ls-files", "-u"]).is_empty());
+        tui.quit();
+    }
+}
+
+#[test]
+fn external_repeated_saves_refresh_an_already_modified_diff() {
+    let repository = common::review_fixture("content");
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("changed line 1");
+    let status = git_ok(repository.path(), &["status", "--porcelain"]);
+    for text in ["second external edit\n", "third external edit\n"] {
+        std::fs::write(repository.path().join("file.txt"), text).unwrap();
+        assert_eq!(
+            git_ok(repository.path(), &["status", "--porcelain"]),
+            status
+        );
+        tui.wait_for(text.trim());
+    }
+    tui.quit();
+}
+
+#[test]
+fn external_amend_keeps_selected_commit_and_displayed_diff_in_sync() {
+    let repository = common::review_fixture("history");
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("old-history-content");
+    git_ok(repository.path(), &["rm", "old-only.txt"]);
+    std::fs::write(repository.path().join("file.txt"), "new-history-content\n").unwrap();
+    git_ok(
+        repository.path(),
+        &["commit", "--amend", "-am", "rewritten commit"],
+    );
+    tui.wait_for("rewritten commit");
+    tui.wait_for("new-history-content");
+    tui.wait_until_hidden("old-history-content");
+    tui.wait_until_hidden("old-only.txt");
+    tui.quit();
 }

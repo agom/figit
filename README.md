@@ -114,13 +114,18 @@ Local branches whose configured upstream no longer exists are marked with `✗`.
 | `←` / `→` | Pan the diff horizontally |
 | `L` | Load the full diff when a large diff was truncated |
 
+In file mode, `f` from staging starts fixup target selection; `Enter` confirms
+the selected commit and `Esc` cancels back to staging.
+
 ### Conflict resolver
 
 | Key | Action |
 | --- | --- |
-| `o` / `t` / `b` | Take Ours / Theirs / Base |
+| `o` / `t` | Preview Ours / Theirs for the selected hunk (or whole file when no text hunk exists) |
+| `b` | Preview restoring the entire file from Base |
 | `e` | Open the file in `$VISUAL` / `$EDITOR` |
-| `Enter` | Confirm the previewed result |
+| `Enter` | Confirm the previewed result (including deletion when the chosen side has no file) |
+| `Esc` | Cancel the preview without changing the file |
 | `[` / `]`, `h` / `l` | Switch hunk, pan |
 
 ### Stash manager (`s`)

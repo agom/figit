@@ -1646,7 +1646,7 @@ fn bench_secondary_paths() {
             theirs_diff: side("theirs"),
             result_diff: Vec::new(),
             working: working.into_bytes(),
-            pending_working: None,
+            pending_resolution: None,
             result_preview: false,
             chosen_side: None,
             hunk_index: 0,
@@ -1701,4 +1701,294 @@ fn wrapped_cursor_handles_explicit_newlines() {
     assert_eq!(lines.len(), 2);
     assert_eq!(wrapped_cursor(&lines, &chars, 2), (0, 2));
     assert_eq!(wrapped_cursor(&lines, &chars, 3), (1, 0));
+}
+
+fn review_app(scenario: &str) -> (tempfile::TempDir, App) {
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new("bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/review-regressions.sh"))
+        .arg(directory.path())
+        .arg(scenario)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let backend = crate::backend::open(directory.path()).unwrap();
+    let app = App::new(
+        backend.build_graph().unwrap(),
+        backend.status().unwrap(),
+        Some(backend),
+    );
+    (directory, app)
+}
+
+fn review_git(path: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn conflict_previews_leave_files_untouched_and_escape_cancels() {
+    for (scenario, side) in [
+        ("conflict", ConflictSide::Base),
+        ("modify-delete", ConflictSide::Theirs),
+        ("delete-modify", ConflictSide::Ours),
+    ] {
+        let (directory, mut app) = review_app(scenario);
+        let original = std::fs::read(directory.path().join("file.txt")).unwrap();
+        app.choose_selected_conflict_side(side);
+        let screen = render_full_app(&mut app, 120, 40);
+        assert!(screen.contains(if side == ConflictSide::Base {
+            "Restore entire file from Base"
+        } else {
+            "Delete entire file"
+        }));
+        assert_eq!(
+            std::fs::read(directory.path().join("file.txt")).unwrap(),
+            original
+        );
+        assert!(!review_git(directory.path(), &["ls-files", "-u"]).is_empty());
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(!app.three_way_view.as_ref().unwrap().result_preview);
+        assert_eq!(
+            std::fs::read(directory.path().join("file.txt")).unwrap(),
+            original
+        );
+        app.choose_selected_conflict_side(side);
+        app.confirm_selected_conflict_result();
+        assert!(review_git(directory.path(), &["ls-files", "-u"]).is_empty());
+        if side == ConflictSide::Base {
+            assert_eq!(
+                std::fs::read(directory.path().join("file.txt")).unwrap(),
+                b"base\n"
+            );
+        } else {
+            assert!(!directory.path().join("file.txt").exists());
+        }
+    }
+}
+
+#[test]
+fn external_conflict_edits_invalidate_previews_before_writing_or_staging() {
+    for refresh_first in [false, true] {
+        let (directory, mut app) = review_app("conflict");
+        app.choose_selected_conflict_side(ConflictSide::Theirs);
+        std::fs::write(directory.path().join("file.txt"), "external resolution\n").unwrap();
+        if refresh_first {
+            app.reload_external_snapshot(load_repository_snapshot(directory.path()).unwrap());
+            assert!(!app.three_way_view.as_ref().unwrap().result_preview);
+        }
+        app.confirm_selected_conflict_result();
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("file.txt")).unwrap(),
+            "external resolution\n"
+        );
+        assert!(!review_git(directory.path(), &["ls-files", "-u"]).is_empty());
+    }
+}
+
+#[test]
+fn content_refresh_updates_diff_and_preserves_then_clamps_viewport() {
+    let (directory, mut app) = review_app("content");
+    app.diff_area = Rect::new(0, 0, 60, 10);
+    app.diff_scroll = 20;
+    let selected = app.selected_status;
+    let text = (0..60)
+        .map(|i| format!("new content {i}\n"))
+        .collect::<String>();
+    std::fs::write(directory.path().join("file.txt"), text).unwrap();
+    let snapshot = load_repository_snapshot(directory.path()).unwrap();
+    assert_eq!(snapshot.status, app.local_status);
+    let old_stats_generation = app.diff_stats_generation;
+    app.reload_external_snapshot(snapshot);
+    assert!(app
+        .diff_lines
+        .iter()
+        .any(|line| line.text.contains("new content 40")));
+    assert_eq!(app.diff_scroll, 20);
+    assert_eq!(app.selected_status, selected);
+    assert!(app.diff_stats_generation > old_stats_generation);
+    std::fs::write(directory.path().join("file.txt"), "short\n").unwrap();
+    app.reload_external_snapshot(load_repository_snapshot(directory.path()).unwrap());
+    assert_eq!(app.diff_scroll, 0);
+}
+
+#[test]
+fn external_amend_updates_graph_details_and_diff_to_the_same_commit() {
+    let (directory, mut app) = review_app("history");
+    app.select_graph_index(0);
+    let old = app.historical_commit.clone().unwrap();
+    review_git(directory.path(), &["rm", "old-only.txt"]);
+    std::fs::write(directory.path().join("file.txt"), "new-history-content\n").unwrap();
+    review_git(
+        directory.path(),
+        &["commit", "-am", "rewritten commit", "--amend"],
+    );
+    let head = review_git(directory.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(head, old);
+    app.reload_external_snapshot(load_repository_snapshot(directory.path()).unwrap());
+    assert_eq!(app.selected_commit_id().as_deref(), Some(head.as_str()));
+    assert_eq!(app.historical_commit.as_deref(), Some(head.as_str()));
+    assert!(app.status.iter().all(|entry| entry.path != "old-only.txt"));
+    assert!(app
+        .diff_lines
+        .iter()
+        .any(|line| line.text.contains("new-history-content")));
+    let screen = render_full_app(&mut app, 100, 36);
+    assert!(screen.contains("rewritten commit"));
+    assert!(!screen.contains("selected commit"));
+}
+
+#[test]
+fn clicks_use_the_rendered_file_list_offset_and_ignore_borders_and_blank_rows() {
+    for (historical, staged) in [(false, false), (false, true), (true, false)] {
+        let entries = (0..30)
+            .map(|i| StatusEntry {
+                path: format!("file-{i:02}.txt").into(),
+                index: if staged || historical { 'M' } else { ' ' },
+                worktree: if staged || historical { ' ' } else { 'M' },
+            })
+            .collect();
+        let mut app = App::new(synthetic_graph(), entries, None);
+        app.focus = Focus::Status;
+        app.selected_status = 20;
+        app.status_section = if staged {
+            StatusSection::Staged
+        } else {
+            StatusSection::Unstaged
+        };
+        if historical {
+            app.historical_commit = Some("m".into());
+        }
+        let screen = render_full_app(&mut app, 100, 36);
+        let (row, line) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("file-"))
+            .unwrap();
+        let column = line[..line.find("file-").unwrap()].chars().count();
+        let visible = &line[line.find("file-").unwrap()..];
+        let expected: usize = visible[5..7].parse().unwrap();
+        assert!(expected > 0, "fixture must scroll");
+        app.handle_mouse(column as u16, row as u16);
+        assert_eq!(
+            app.selected_status, expected,
+            "historical={historical}, staged={staged}"
+        );
+        let before = app.selected_status;
+        app.handle_mouse(app.staging_area.x, app.staging_area.y);
+        assert_eq!(app.selected_status, before);
+        app.status.truncate(1);
+        app.refresh_status_indices();
+        app.selected_status = 0;
+        render_full_app(&mut app, 100, 36);
+        app.handle_mouse(column as u16, row as u16 + 2);
+        assert_eq!(app.selected_status, 0);
+    }
+}
+
+#[test]
+fn modal_wheel_input_cannot_scroll_or_refocus_background_panels() {
+    use crossterm::event::MouseEvent;
+    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+    app.select_graph_index(0);
+    render_full_app(&mut app, 100, 36);
+    for overlay in 0..5 {
+        app.help_popup = overlay == 0;
+        app.graph_action = (overlay == 1).then_some(GraphAction::Reset);
+        app.commit_popup = overlay == 2;
+        app.abort_rebase_popup = overlay == 3;
+        app.error_popup = (overlay == 4).then(|| "test error".into());
+        for area in [app.diff_area, app.graph_area, app.details_area] {
+            let mut wheel = Some((area.x + 1, area.y + 1, 1));
+            app.collect_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: area.x + 1,
+                    row: area.y + 1,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut wheel,
+            );
+            assert!(wheel.is_none());
+            let focus = app.focus;
+            // Also reject a wheel event queued before the overlay opened.
+            app.handle_mouse_scroll(area.x + 1, area.y + 1, 1);
+            assert_eq!(app.focus, focus);
+            assert_eq!(
+                (app.diff_scroll, app.scroll_y, app.details_scroll),
+                (0, 0, 0)
+            );
+        }
+    }
+}
+
+#[test]
+fn escape_cancels_fixup_and_restores_normal_enter_behavior() {
+    let status = vec![StatusEntry {
+        path: "file.txt".into(),
+        index: 'M',
+        worktree: ' ',
+    }];
+    let mut app = App::new(synthetic_graph(), status, None);
+    app.focus = Focus::Status;
+    app.handle_key(KeyEvent::from(KeyCode::Char('f')));
+    assert!(app.pending_fixup);
+    assert!(app
+        .status_line()
+        .to_string()
+        .contains("Choose fixup target"));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.pending_fixup);
+    assert_eq!(app.focus, Focus::Status);
+    app.select_graph_index(1);
+    app.focus = Focus::Graph;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.graph_action, Some(GraphAction::CheckoutBranch));
+    assert!(!app.commit_popup);
+}
+
+#[test]
+fn another_workflow_clears_fixup_selection() {
+    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+    app.pending_fixup = true;
+    app.open_search_popup();
+    assert!(!app.pending_fixup);
+    app.search_popup = None;
+    app.pending_fixup = true;
+    app.open_graph_action(GraphAction::Reset);
+    assert!(!app.pending_fixup);
+}
+
+#[cfg(unix)]
+#[test]
+fn whole_file_side_confirmation_restores_git_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let (directory, mut app) = review_app("modify-delete");
+    let path = directory.path().join("file.txt");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.refresh_diff();
+    app.choose_selected_conflict_side(ConflictSide::Ours);
+    assert_ne!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o111,
+        0
+    );
+    app.confirm_selected_conflict_result();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o111,
+        0
+    );
+    assert!(review_git(directory.path(), &["ls-files", "-u"]).is_empty());
 }
