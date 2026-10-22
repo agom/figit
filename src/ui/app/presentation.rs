@@ -326,6 +326,31 @@ impl App {
             }
         }
     }
+
+    /// Nerd Font glyph and color for the file type at `path`.
+    pub(super) fn file_icon(&self, path: &str) -> (char, Color) {
+        let theme = if self.light_theme() {
+            devicons::Theme::Light
+        } else {
+            devicons::Theme::Dark
+        };
+        let icon = devicons::icon_for_file(path, &Some(theme));
+        (icon.icon, devicon_color(icon.color))
+    }
+}
+
+pub(super) fn devicon_color(hex: &str) -> Color {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() == 6 {
+        if let (Ok(red), Ok(green), Ok(blue)) = (
+            u8::from_str_radix(&hex[0..2], 16),
+            u8::from_str_radix(&hex[2..4], 16),
+            u8::from_str_radix(&hex[4..6], 16),
+        ) {
+            return Color::Rgb(red, green, blue);
+        }
+    }
+    Color::Gray
 }
 
 fn light_surface(color: Color) -> Color {

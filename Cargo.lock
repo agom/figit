@@ -622,6 +622,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "devicons"
+version = "0.6.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777b2f88eb5418ba48f117570ecd0320404da0bdc39c66edf23d4d23550354b7"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -736,6 +745,7 @@ dependencies = [
  "anyhow",
  "axoupdater",
  "crossterm",
+ "devicons",
  "gix",
  "libc",
  "notify",

@@ -112,6 +112,10 @@ The header shows the repository, branch, and working-tree state. Contextual keys
 appear along the bottom; `?` opens the full shortcut reference. Colors adapt to
 the terminal background, and selection markers remain visible with `NO_COLOR`.
 
+File rows are prefixed with a Nerd Font file-type icon; install a
+[Nerd Font](https://www.nerdfonts.com/) to render them (without one the glyphs
+show as placeholder boxes).
+
 | Key | Action |
 | --- | --- |
 | `Space` | Stage/unstage the selected file, hunk, or line |
