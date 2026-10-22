@@ -211,6 +211,18 @@ fn devicon_colors_parse_hex() {
 }
 
 #[test]
+fn file_type_glyphs_cover_common_categories() {
+    use super::presentation::file_type_glyph;
+    assert_eq!(file_type_glyph("src/main.rs"), '\u{f1c9}');
+    assert_eq!(file_type_glyph("docs/CHANGELOG.md"), '\u{f15c}');
+    assert_eq!(file_type_glyph("assets/logo.png"), '\u{f1c5}');
+    assert_eq!(file_type_glyph("Cargo.lock"), '\u{f023}');
+    assert_eq!(file_type_glyph(".gitignore"), '\u{f1d3}');
+    assert_eq!(file_type_glyph("archive.tar.gz"), '\u{f1c6}');
+    assert_eq!(file_type_glyph("NOTES"), '\u{f15b}');
+}
+
+#[test]
 fn status_rows_show_file_type_icons() {
     let status = vec![StatusEntry {
         path: "src/main.rs".to_string().into(),
@@ -219,10 +231,9 @@ fn status_rows_show_file_type_icons() {
     }];
     let app = App::new(GraphModel::default(), status, None);
     let line = app.file_status_line(0, false, 80).to_string();
-    let rust = devicons::icon_for_file("src/main.rs", &Some(devicons::Theme::Dark));
     assert!(
-        line.contains(rust.icon),
-        "expected the rust icon in {line:?}"
+        line.contains('\u{f1c9}'),
+        "expected the code icon in {line:?}"
     );
 
     let status = vec![StatusEntry {
@@ -232,9 +243,8 @@ fn status_rows_show_file_type_icons() {
     }];
     let app = App::new(GraphModel::default(), status, None);
     let line = app.file_status_line(0, false, 80).to_string();
-    let unknown = devicons::icon_for_file("NOTES", &Some(devicons::Theme::Dark));
     assert!(
-        line.contains(unknown.icon),
+        line.contains('\u{f15b}'),
         "expected the default file icon in {line:?}"
     );
 }

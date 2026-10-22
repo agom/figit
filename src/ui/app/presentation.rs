@@ -327,16 +327,144 @@ impl App {
         }
     }
 
-    /// Nerd Font glyph and color for the file type at `path`.
+    /// Nerd Font glyph and color for the file type at `path`. Uses full-size
+    /// Font Awesome file glyphs (the `devicons` set has some compact designs)
+    /// with the per-type color from `devicons`.
     pub(super) fn file_icon(&self, path: &str) -> (char, Color) {
         let theme = if self.light_theme() {
             devicons::Theme::Light
         } else {
             devicons::Theme::Dark
         };
-        let icon = devicons::icon_for_file(path, &Some(theme));
-        (icon.icon, devicon_color(icon.color))
+        let color = devicon_color(devicons::icon_for_file(path, &Some(theme)).color);
+        (file_type_glyph(path), color)
     }
+}
+
+/// Full-size Font Awesome file glyphs, chosen by file name or extension.
+pub(super) fn file_type_glyph(path: &str) -> char {
+    const FILE: char = '\u{f15b}'; // nf-fa-file
+    const FILE_TEXT: char = '\u{f15c}'; // nf-fa-file_text
+    const FILE_CODE: char = '\u{f1c9}'; // nf-fa-file_code_o
+    const FILE_CSV: char = '\u{eefc}'; // nf-fa-file_csv
+    const FILE_IMAGE: char = '\u{f1c5}'; // nf-fa-file_picture_o
+    const FILE_PDF: char = '\u{f1c1}'; // nf-fa-file_pdf_o
+    const FILE_ARCHIVE: char = '\u{f1c6}'; // nf-fa-file_zipper
+    const FILE_AUDIO: char = '\u{f1c7}'; // nf-fa-file_sound_o
+    const FILE_VIDEO: char = '\u{f1c8}'; // nf-fa-file_video_o
+    const FILE_WORD: char = '\u{f1c2}'; // nf-fa-file_word_o
+    const FILE_EXCEL: char = '\u{f1c3}'; // nf-fa-file_excel_o
+    const FILE_SLIDES: char = '\u{f1c4}'; // nf-fa-file_powerpoint_o
+    const TERMINAL: char = '\u{f120}'; // nf-fa-terminal
+    const LOCK: char = '\u{f023}'; // nf-fa-lock
+    const GIT: char = '\u{f1d3}'; // nf-fa-git
+
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    match name.as_str() {
+        ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitconfig" => return GIT,
+        "license" | "licence" | "copying" | "notice" => return FILE_TEXT,
+        "makefile" | "gnumakefile" | "dockerfile" | "containerfile" | "justfile" => {
+            return FILE_CODE;
+        }
+        _ => {}
+    }
+
+    let ext = name.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    match ext {
+        "md" | "markdown" | "rst" | "adoc" | "org" | "txt" | "text" | "log" => FILE_TEXT,
+        "csv" | "tsv" => FILE_CSV,
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "webp" | "ico" | "tif" | "tiff"
+        | "heic" | "avif" => FILE_IMAGE,
+        "pdf" => FILE_PDF,
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" | "jar" | "war" => {
+            FILE_ARCHIVE
+        }
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus" => FILE_AUDIO,
+        "mp4" | "mkv" | "mov" | "avi" | "webm" | "flv" | "wmv" => FILE_VIDEO,
+        "doc" | "docx" | "odt" | "rtf" => FILE_WORD,
+        "xls" | "xlsx" | "ods" => FILE_EXCEL,
+        "ppt" | "pptx" | "odp" => FILE_SLIDES,
+        "lock" => LOCK,
+        "sh" | "bash" | "zsh" | "fish" => TERMINAL,
+        _ if is_code_extension(ext) => FILE_CODE,
+        _ => FILE,
+    }
+}
+
+fn is_code_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "rs" | "py"
+            | "pyi"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "ts"
+            | "tsx"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "rb"
+            | "php"
+            | "swift"
+            | "c"
+            | "h"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "hpp"
+            | "hh"
+            | "hxx"
+            | "cs"
+            | "scala"
+            | "lua"
+            | "pl"
+            | "pm"
+            | "r"
+            | "dart"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "hrl"
+            | "hs"
+            | "lhs"
+            | "clj"
+            | "cljs"
+            | "vim"
+            | "el"
+            | "lisp"
+            | "scm"
+            | "ps1"
+            | "bat"
+            | "cmd"
+            | "sql"
+            | "graphql"
+            | "gql"
+            | "proto"
+            | "vue"
+            | "svelte"
+            | "astro"
+            | "zig"
+            | "nim"
+            | "cr"
+            | "ml"
+            | "mli"
+            | "fs"
+            | "fsx"
+            | "json"
+            | "jsonc"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "env"
+            | "properties"
+            | "xml"
+    )
 }
 
 pub(super) fn devicon_color(hex: &str) -> Color {
