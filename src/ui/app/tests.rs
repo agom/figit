@@ -198,6 +198,48 @@ fn status_rows_keep_line_totals_visible_in_narrow_columns() {
 }
 
 #[test]
+fn devicon_colors_parse_hex() {
+    assert_eq!(
+        super::presentation::devicon_color("#89e051"),
+        Color::Rgb(0x89, 0xe0, 0x51)
+    );
+    assert_eq!(
+        super::presentation::devicon_color("89e051"),
+        Color::Rgb(0x89, 0xe0, 0x51)
+    );
+    assert_eq!(super::presentation::devicon_color("bogus"), Color::Gray);
+}
+
+#[test]
+fn status_rows_show_file_type_icons() {
+    let status = vec![StatusEntry {
+        path: "src/main.rs".to_string().into(),
+        index: ' ',
+        worktree: 'M',
+    }];
+    let app = App::new(GraphModel::default(), status, None);
+    let line = app.file_status_line(0, false, 80).to_string();
+    let rust = devicons::icon_for_file("src/main.rs", &Some(devicons::Theme::Dark));
+    assert!(
+        line.contains(rust.icon),
+        "expected the rust icon in {line:?}"
+    );
+
+    let status = vec![StatusEntry {
+        path: "NOTES".to_string().into(),
+        index: ' ',
+        worktree: 'M',
+    }];
+    let app = App::new(GraphModel::default(), status, None);
+    let line = app.file_status_line(0, false, 80).to_string();
+    let unknown = devicons::icon_for_file("NOTES", &Some(devicons::Theme::Dark));
+    assert!(
+        line.contains(unknown.icon),
+        "expected the default file icon in {line:?}"
+    );
+}
+
+#[test]
 fn dimmed_graph_keeps_lane_color_and_darkens_it_instead_of_graying_it() {
     let mut line = Line::from(vec![
         Span::styled("●", Style::default().fg(Color::LightCyan)),

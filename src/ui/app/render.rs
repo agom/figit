@@ -2066,7 +2066,13 @@ impl App {
         let stat_text = stat.map_or_else(String::new, |(added, removed)| {
             format!("+{added} -{removed}")
         });
-        if width < 8 {
+        let stats_width = Line::from(stat_text.as_str()).width();
+        let glyph_width = Line::from(glyph.to_string()).width();
+        let (icon, icon_color) = self.file_icon(&entry.path.display());
+        let icon_width = Line::from(icon.to_string()).width();
+        // Below this the row keeps the marker and +/- totals only; the path and
+        // file icon need more room than the pane has.
+        if width < glyph_width + 1 + icon_width + 1 + stats_width + 1 {
             return Line::from(vec![
                 Span::styled(if selected { "▸ " } else { "  " }, selection),
                 Span::styled(truncate_start(&stat_text, width), selection),
@@ -2084,14 +2090,13 @@ impl App {
         } else {
             None
         };
-        let stats_width = Line::from(stat_text.as_str()).width();
-        let glyph_width = Line::from(glyph.to_string()).width();
         let recap_width = hunk_recap
             .as_deref()
             .map_or(0, |recap| Line::from(recap).width());
         let recap_spacing = usize::from(hunk_recap.is_some());
         if hunk_recap.is_some()
-            && width < glyph_width + 1 + stats_width + recap_width + recap_spacing + 9
+            && width
+                < glyph_width + 1 + icon_width + 1 + stats_width + recap_width + recap_spacing + 9
         {
             // Keep the +/- totals visible on narrow panes; the recap can be
             // omitted when both summaries cannot fit side by side.
@@ -2102,12 +2107,12 @@ impl App {
             .map_or(0, |recap| Line::from(recap).width());
         let recap_spacing = usize::from(hunk_recap.is_some());
         let suffix_width = stats_width + recap_width + recap_spacing;
-        let path_width = width.saturating_sub(glyph_width + 1 + suffix_width + 1);
+        let path_width = width.saturating_sub(glyph_width + 1 + icon_width + 1 + suffix_width + 1);
         let display_path = truncate_start(&entry.path.display(), path_width);
         let path_style = selection;
         let path_display_width = Line::from(display_path.as_str()).width();
-        let available_padding =
-            width.saturating_sub(glyph_width + 1 + path_display_width + suffix_width);
+        let available_padding = width
+            .saturating_sub(glyph_width + 1 + icon_width + 1 + path_display_width + suffix_width);
         let padding = if display_path.is_empty() {
             available_padding
         } else {
@@ -2118,12 +2123,14 @@ impl App {
             .map_or(("", display_path.as_str()), |slash| {
                 display_path.split_at(slash + 1)
             });
+        let icon_style = selection.fg(icon_color);
         let mut spans = vec![
             Span::styled(
                 if selected { "▸ " } else { "  " },
                 selection.fg(Color::LightCyan),
             ),
             Span::styled(format!("{glyph} "), glyph_style),
+            Span::styled(format!("{icon} "), icon_style),
             Span::styled(
                 directory.to_string(),
                 path_style
