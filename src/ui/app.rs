@@ -1560,6 +1560,7 @@ pub struct App {
     bg: Option<Color>,
     terminal_palette: TerminalAnsiPalette,
     no_color: bool,
+    panel_hints_visible: bool,
     focus: Focus,
     selected_status: usize,
     selected_statuses: HashSet<usize>,
@@ -2423,6 +2424,7 @@ impl App {
             bg: None,
             terminal_palette: [None; 16],
             no_color: false,
+            panel_hints_visible: true,
             focus: if has_local_changes {
                 Focus::Status
             } else {
@@ -3311,6 +3313,15 @@ impl App {
 
     /// Returns `true` when the app should quit.
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if key.code == KeyCode::Char('H')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+            && self.modal_closed()
+        {
+            self.panel_hints_visible = !self.panel_hints_visible;
+            return false;
+        }
         if self.help_popup {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {

@@ -138,7 +138,12 @@ impl App {
                 lines.push(line);
             }
             f.render_widget(
-                Paragraph::new(lines).block(self.panel_block("Graph", graph_focused)),
+                Paragraph::new(lines).block(self.panel_footer(
+                    self.panel_block("Graph", graph_focused),
+                    graph_area,
+                    graph_focused,
+                    None,
+                )),
                 graph_area,
             );
             let total_graph = self.rows.len() + usize::from(has_local);
@@ -246,7 +251,7 @@ impl App {
                 (None, _) => "Diff".to_string(),
             };
             let mut diff_block = self.panel_block(&diff_title, self.focus == Focus::Diff);
-            if self.diff_path.is_some() {
+            let metadata = if self.diff_path.is_some() {
                 let scope = if self.historical_commit.is_some() {
                     "read-only"
                 } else if self.diff_target == DiffTarget::Index {
@@ -255,20 +260,25 @@ impl App {
                     "unstaged"
                 };
                 let mode = if self.line_mode {
-                    "line selection · f file"
+                    "line selection"
                 } else if self.hunk_mode {
-                    "hunk selection · f file"
+                    "hunk selection"
                 } else {
                     match self.diff_mode {
                         DiffMode::Unified => "unified",
                         DiffMode::SideBySide => "side-by-side",
                     }
                 };
-                diff_block = diff_block.title_bottom(Span::styled(
-                    format!(" {scope} · {mode} "),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
+                Some(format!("{scope} · {mode}"))
+            } else {
+                None
+            };
+            diff_block = self.panel_footer(
+                diff_block,
+                diff_area,
+                self.focus == Focus::Diff,
+                metadata.as_deref(),
+            );
             f.render_widget(diff_widget.block(diff_block), diff_area);
             if rendered_len > viewport {
                 let mut scrollbar_state = ScrollbarState::new(rendered_len)
@@ -334,6 +344,7 @@ impl App {
                     ("Tab / Shift+Tab", "next / previous pane"),
                     ("z", "maximize / restore focused pane"),
                     ("g", "toggle graph pane"),
+                    ("Shift+H", "show/hide focused-panel shortcuts"),
                     ("j / k", "move selection"),
                     ("/", "search commits"),
                     ("u", "undo from reflog"),
@@ -436,7 +447,7 @@ impl App {
                 .borders(Borders::ALL)
                 .title("Help — keys")
                 .title_bottom(styled_key_hints(
-                    &[("Esc / ? / q", "close"), ("j / k", "scroll")],
+                    &[("Esc / ? / q", "close")],
                     Color::LightCyan,
                 ))
                 .border_style(Color::LightCyan),
@@ -552,7 +563,6 @@ impl App {
         // Panning and scrolling only work while the diff pane is focused.
         if self.focus == Focus::Diff {
             actions.push(("h/l", "pan"));
-            actions.push(("j/k", "scroll"));
         }
         let hints = styled_key_hints(&actions, Color::LightCyan);
         let border = Style::default()
@@ -1213,7 +1223,12 @@ impl App {
             Paragraph::new(lines)
                 .scroll((scroll, 0))
                 .wrap(Wrap { trim: false })
-                .block(self.panel_block("Commit Details", self.focus == Focus::Details)),
+                .block(self.panel_footer(
+                    self.panel_block("Commit Details", self.focus == Focus::Details),
+                    area,
+                    self.focus == Focus::Details,
+                    None,
+                )),
             area,
         );
         if visual_lines > viewport {
@@ -1997,6 +2012,7 @@ impl App {
                     Modifier::empty()
                 }),
             ));
+        let block = self.panel_footer(block, area, focused, None);
         let viewport = area.height.saturating_sub(2) as usize;
         let scroll = self.status_list_scroll(indices, area);
         f.render_widget(
@@ -2190,6 +2206,58 @@ impl App {
             ));
         }
         Line::from(spans).style(selection)
+    }
+
+    /// Reserve space before adding left/right titles so hints never overlap
+    /// metadata. Border titles never consume content rows.
+    fn panel_footer(
+        &self,
+        mut block: Block<'static>,
+        area: Rect,
+        focused: bool,
+        metadata: Option<&str>,
+    ) -> Block<'static> {
+        let width = area.width.saturating_sub(2) as usize;
+        if area.height < 3 || width == 0 {
+            return block;
+        }
+        let muted = Style::default()
+            .fg(Color::DarkGray)
+            .remove_modifier(Modifier::BOLD);
+        let metadata = metadata.map(|text| truncate(&format!(" {text} "), width));
+        let metadata_width = metadata
+            .as_ref()
+            .map_or(0, |text| Line::from(text.as_str()).width());
+        let available = width.saturating_sub(metadata_width + usize::from(metadata_width > 0));
+        let mut hints = if focused {
+            styled_key_hints_fitting(
+                &self.panel_actions(),
+                Color::LightCyan,
+                available.saturating_sub(2),
+            )
+        } else {
+            Line::default()
+        };
+        // The border can be bold; descriptions deliberately remain subdued.
+        for span in &mut hints.spans {
+            if !span.style.add_modifier.contains(Modifier::BOLD) {
+                span.style = muted;
+            }
+        }
+        let mut footer = Line::default();
+        if !hints.spans.is_empty() {
+            footer.push_span(Span::styled(" ", muted));
+            footer.spans.extend(hints.spans);
+            footer.push_span(Span::styled(" ", muted));
+        }
+        if let Some(metadata) = metadata {
+            block = block.title_bottom(Line::from(Span::styled(metadata, muted)).right_aligned());
+        }
+        if footer.spans.is_empty() {
+            block
+        } else {
+            block.title_bottom(footer)
+        }
     }
 
     fn panel_block(&self, title: &str, focused: bool) -> Block<'static> {

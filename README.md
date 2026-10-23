@@ -76,9 +76,15 @@ figit --version
 | `/` | Search commits: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
 | `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
 | `U` | Check for or install an update |
+| `Shift+H` | Show / hide shortcuts in the focused panel’s bottom border |
 | `?` | Toggle the in-app key map |
 | `q` | Quit |
 | `Esc` | Close the active overlay |
+
+The focused panel shows up to three relevant shortcuts in its bottom border.
+Hints adapt to the selected file and diff mode, and fit without wrapping in narrow
+panels. Press `Shift+H` to hide or show them for the current session; hints start
+visible on each launch. Press `?` for the full key map.
 
 External repository changes refresh automatically. If filesystem watching is
 unavailable (for example, Linux watch limits are reached), Figit falls back to

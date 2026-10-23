@@ -138,6 +138,261 @@ fn contextual_hints_fit_and_keep_navigation_discoverable() {
     }
 }
 
+fn shortcut_test_app() -> App {
+    let mut app = App::new(
+        synthetic_graph(),
+        vec![
+            StatusEntry {
+                path: "work.txt".into(),
+                index: ' ',
+                worktree: 'M',
+            },
+            StatusEntry {
+                path: "index.txt".into(),
+                index: 'M',
+                worktree: ' ',
+            },
+        ],
+        None,
+    );
+    app.diff_path = Some("work.txt".into());
+    app.set_diff_lines(parse_diff("@@ -1 +1 @@\n-old\n+new\n"));
+    app
+}
+
+#[test]
+fn panel_hints_toggle_is_session_local_and_respects_modal_input() {
+    let mut app = shortcut_test_app();
+    assert!(app.panel_hints_visible);
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+        app.handle_key(KeyEvent::new(KeyCode::Char('H'), modifiers));
+    }
+    assert!(app.panel_hints_visible);
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::CONTROL));
+    assert!(app.panel_hints_visible);
+
+    app.commit_popup = true;
+    app.commit_field = CommitField::Title;
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert_eq!(app.commit_title, "H");
+    assert!(app.panel_hints_visible);
+    assert!(app.panel_actions().is_empty());
+    app.commit_popup = false;
+    app.help_popup = true;
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(app.panel_hints_visible);
+    assert!(app.panel_actions().is_empty());
+    app.help_popup = false;
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(app.panel_actions().is_empty());
+    assert!(app.context_hints(120).to_string().contains("H hints"));
+    assert!(shortcut_test_app().panel_hints_visible);
+}
+
+#[test]
+fn panel_hints_describe_available_file_and_diff_actions() {
+    let mut app = shortcut_test_app();
+    assert_eq!(
+        app.panel_actions(),
+        vec![
+            ("Space", "stage file"),
+            ("x", "discard file"),
+            ("h", "hunks")
+        ]
+    );
+    app.status_section = StatusSection::Staged;
+    app.ensure_status_selection();
+    assert_eq!(
+        app.panel_actions()[..2],
+        [("Space", "unstage file"), ("c", "commit")]
+    );
+
+    app.status_section = StatusSection::Unstaged;
+    app.ensure_status_selection();
+    app.focus = Focus::Diff;
+    assert_eq!(app.panel_actions()[0], ("Space", "stage file"));
+    app.set_diff_lines(parse_diff("@@ -1 +1 @@\n-old\n+new\n"));
+    app.toggle_hunk_mode();
+    assert_eq!(app.panel_actions()[0], ("Space", "stage hunk"));
+    app.focus = Focus::Status;
+    assert_eq!(app.panel_actions()[0], ("F", "stage file"));
+    app.focus = Focus::Diff;
+    app.toggle_line_mode();
+    assert_eq!(app.panel_actions()[0], ("Space", "stage line"));
+    assert!(app.panel_actions().contains(&("f", "file mode")));
+    app.diff_target = DiffTarget::Index;
+    assert_eq!(app.panel_actions()[0], ("Space", "unstage line"));
+
+    app.historical_commit = Some("m".into());
+    assert!(!app
+        .panel_actions()
+        .iter()
+        .any(|(_, description)| description.contains("stage")));
+    app.line_mode = false;
+    app.hunk_mode = false;
+    assert!(app.panel_actions().contains(&("v", "view")));
+    app.focus = Focus::Status;
+    assert!(app.panel_actions().is_empty());
+    app.focus = Focus::Details;
+    assert!(app.panel_actions().is_empty());
+
+    app.focus = Focus::Graph;
+    app.selected_graph = 0; // Local Changes has no checkout action.
+    app.historical_commit = None;
+    assert!(!app
+        .panel_actions()
+        .iter()
+        .any(|(_, description)| *description == "checkout"));
+    assert!(app.panel_actions().contains(&("c", "commit")));
+    app.selected_graph = 1; // main
+    assert_eq!(
+        app.panel_actions(),
+        vec![("Enter", "checkout"), ("/", "search"), ("p", "pull")]
+    );
+    app.selected_graph = 2; // commit without a branch
+    assert!(!app
+        .panel_actions()
+        .iter()
+        .any(|(_, description)| *description == "checkout"));
+    assert!(app.panel_actions().contains(&("p", "pick commit")));
+}
+
+#[test]
+fn panel_hints_omit_unavailable_actions_and_prioritize_truncated_diffs() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Diff;
+    app.diff_truncated = Some((20_000, 30_000));
+    assert_eq!(app.panel_actions()[0], ("L", "load full diff"));
+    app.remote_operation = Some(RemoteOperation::Fetch("origin".into()));
+    assert_eq!(app.panel_actions(), vec![("[/]", "hunk")]);
+    app.remote_operation = None;
+    app.details_loading = true;
+    assert!(app.panel_actions().is_empty());
+    app.details_loading = false;
+    app.diff_path = None;
+    assert!(app.panel_actions().is_empty());
+    app.focus = Focus::Status;
+    app.status.clear();
+    app.refresh_status_indices();
+    assert!(app.panel_actions().is_empty());
+    app.loading = true;
+    app.focus = Focus::Graph;
+    assert!(app.panel_actions().is_empty());
+}
+
+#[test]
+fn panel_hints_preserve_content_geometry_and_only_change_the_focused_border() {
+    for (width, height) in [(120, 40), (80, 24), (24, 8)] {
+        for (graph_visible, maximized) in [(true, false), (false, false), (true, true)] {
+            for focus in [Focus::Status, Focus::Graph, Focus::Diff, Focus::Details] {
+                if !graph_visible && focus == Focus::Graph {
+                    continue;
+                }
+                let mut app = shortcut_test_app();
+                app.focus = focus;
+                app.graph_visible = graph_visible;
+                app.maximized = maximized;
+                if focus == Focus::Details {
+                    app.historical_commit = Some("m".into());
+                }
+                let shown = render_full_app(&mut app, width, height);
+                let areas = (
+                    app.graph_area,
+                    app.staging_area,
+                    app.diff_area,
+                    app.details_area,
+                );
+                let focused_area = match focus {
+                    Focus::Graph => app.graph_area,
+                    Focus::Status => app.staging_panes(app.staging_area)[0],
+                    Focus::Diff => app.diff_area,
+                    Focus::Details => app.details_area,
+                    _ => unreachable!(),
+                };
+                app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+                let hidden = render_full_app(&mut app, width, height);
+                assert_eq!(
+                    areas,
+                    (
+                        app.graph_area,
+                        app.staging_area,
+                        app.diff_area,
+                        app.details_area
+                    )
+                );
+                for (y, (shown, hidden)) in shown.lines().zip(hidden.lines()).enumerate() {
+                    if focused_area.is_empty() || y != focused_area.bottom() as usize - 1 {
+                        assert_eq!(shown, hidden, "only the focused bottom border may change");
+                    }
+                }
+                assert_eq!(
+                    (app.diff_scroll, app.diff_scroll_x, app.selected_status),
+                    (0, 0, 0)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn panel_hints_fit_whole_items_beside_diff_metadata() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Diff;
+    app.maximized = true;
+    for width in 5..130 {
+        let screen = render_full_app(&mut app, width, 12);
+        let footer = screen
+            .lines()
+            .nth(app.diff_area.bottom() as usize - 1)
+            .unwrap();
+        if width >= 22 {
+            assert!(footer.contains("unstaged · unified"), "{width}: {footer}");
+        }
+        if footer.contains("Space") {
+            assert!(footer.contains("Space stage file"), "{width}: {footer}");
+        }
+        if footer.contains("[/]") {
+            assert!(footer.contains("[/] hunk"), "{width}: {footer}");
+        }
+        if footer.contains("h hun") {
+            assert!(footer.contains("h hunks"), "{width}: {footer}");
+        }
+    }
+    app.panel_hints_visible = false;
+    let screen = render_full_app(&mut app, 100, 12);
+    assert!(screen.contains("unstaged · unified"));
+    assert!(!screen.contains("Space stage file"));
+}
+
+#[test]
+fn panel_hints_keys_remain_distinct_across_terminal_themes() {
+    for (background, no_color) in [
+        (Color::Rgb(30, 30, 46), false),
+        (Color::Rgb(255, 255, 255), false),
+        (Color::Reset, true),
+    ] {
+        let mut app = shortcut_test_app();
+        app.bg = Some(background);
+        app.no_color = no_color;
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let area = app.staging_panes(app.staging_area)[0];
+        let buffer = terminal.backend().buffer();
+        let y = area.bottom() - 1;
+        let key = &buffer[(area.x + 2, y)];
+        let description = &buffer[(area.x + 8, y)];
+        assert_eq!(key.symbol(), "S");
+        assert!(key.modifier.contains(Modifier::BOLD));
+        assert!(!description.modifier.contains(Modifier::BOLD));
+        if no_color {
+            assert_eq!(key.fg, Color::Reset);
+            assert_eq!(description.fg, Color::Reset);
+        } else {
+            assert_ne!(key.fg, description.fg);
+        }
+    }
+}
+
 #[test]
 fn remote_operation_shows_progress_and_keeps_graph_navigation_available() {
     let mut app = App::new(synthetic_graph(), Vec::new(), None);
