@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 type WatcherResult = std::result::Result<RecommendedWatcher, String>;
 pub(super) type WatcherSetup = Receiver<WatcherResult>;
 
@@ -25,12 +27,20 @@ impl App {
             Ok(watcher) => {
                 self.repository_watcher = Some(watcher);
                 self.watcher_error = None;
+                self.watcher_poll_deadline = None;
                 // The first snapshot may predate registration. Rescan once to
                 // catch writes made before their directories were watched.
                 self.refresh_deadline = Some(Instant::now());
                 crate::profile::mark("watcher ready");
             }
-            Err(error) => self.watcher_error = Some(error),
+            Err(error) => {
+                self.watcher_error = Some(error);
+                // Watch limits and unsupported filesystems must not disable
+                // automatic refresh. Reuse the background snapshot worker;
+                // polling never recursively registers filesystem watches.
+                self.watcher_poll_deadline = Some(Instant::now() + POLL_INTERVAL);
+                self.refresh_deadline = Some(Instant::now());
+            }
         }
     }
 }
