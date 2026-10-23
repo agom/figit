@@ -2417,19 +2417,94 @@ fn slow_watcher_setup_does_not_block_rendering_or_quitting() {
 }
 
 #[test]
-fn watcher_failure_remains_visible_after_successful_repository_refresh() {
+fn watcher_failure_falls_back_to_polling_external_changes() {
     let (directory, mut app) = review_app("content");
     let (sender, receiver) = mpsc::channel();
     app.watch_setup = Some(receiver);
-    sender.send(Err("watch limit reached".into())).unwrap();
+    sender
+        .send(Err("OS file watch limit reached".into()))
+        .unwrap();
     app.poll_repository_watcher();
-    app.reload_external_snapshot(load_repository_snapshot(directory.path()).unwrap());
-    assert!(app
-        .status_line()
-        .to_string()
-        .contains("watch limit reached"));
     assert!(app.watch_setup.is_none());
     assert!(app.repository_watcher.is_none());
+    assert!(app.status_line().to_string().contains("polling every 5s"));
+
+    // The fallback immediately catches changes missed during registration.
+    std::fs::write(directory.path().join("fallback.txt"), "first\n").unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.poll_repository_refresh();
+        if app
+            .local_status
+            .iter()
+            .any(|entry| entry.path == "fallback.txt")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "fallback did not load external file"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.status_line().to_string().contains("polling every 5s"));
+    assert!(!app.refresh_in_progress);
+
+    // Subsequent changes are detected without any filesystem events, but
+    // not before the next interval. Staging is an index-only change.
+    review_git(directory.path(), &["add", "fallback.txt"]);
+    app.poll_repository_refresh();
+    assert!(!app.refresh_in_progress);
+    assert!(!app
+        .local_status
+        .iter()
+        .any(|entry| entry.path == "fallback.txt" && entry.index == 'A'));
+    app.watcher_poll_deadline = Some(Instant::now());
+    app.poll_repository_refresh();
+    assert!(app.refresh_in_progress);
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.poll_repository_refresh();
+        if app
+            .local_status
+            .iter()
+            .any(|entry| entry.path == "fallback.txt" && entry.index == 'A')
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "fallback did not load external staging"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.watcher_poll_deadline.unwrap() > Instant::now());
+    app.watch_error = Some("snapshot failed".into());
+    assert!(app.status_line().to_string().contains("snapshot failed"));
+    app.watch_error = None;
+    app.action_error = Some("action failed".into());
+    assert!(app.status_line().to_string().contains("action failed"));
+}
+
+#[test]
+fn watcher_polling_defers_during_editing_and_does_not_overlap_refreshes() {
+    let (_directory, mut app) = review_app("content");
+    app.watcher_poll_deadline = Some(Instant::now());
+    app.commit_popup = true;
+    app.poll_repository_refresh();
+    assert!(!app.refresh_in_progress);
+    assert!(app.refresh_deadline.is_some());
+    app.commit_popup = false;
+    app.refresh_in_progress = true;
+    app.poll_repository_refresh();
+    assert!(
+        app.refresh_deadline.is_some(),
+        "pending refresh must wait for the running worker"
+    );
+    app.refresh_in_progress = false;
+    app.poll_repository_refresh();
+    assert!(app.refresh_in_progress);
+    assert!(app.refresh_deadline.is_none());
 }
 
 #[test]
@@ -2462,6 +2537,7 @@ fn watcher_completion_catches_changes_made_during_registration() {
         "watcher setup failed: {:?}",
         app.watcher_error
     );
+    assert!(app.watcher_poll_deadline.is_none());
     // A pending filesystem event must not postpone the immediate catch-up.
     let _ = app.watch_tx.try_send(());
     app.poll_repository_refresh();

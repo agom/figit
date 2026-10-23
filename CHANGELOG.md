@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.4 - 2026-10-23
+
+### Fixed
+
+- Automatically fall back to background polling every five seconds when filesystem watcher setup fails, including when Linux file watch limits are reached.
+- Catch changes missed during failed watcher setup and continue detecting external file and index changes without overlapping refresh workers or interrupting commit editing.
+- Show a concise polling status while keeping refresh and action failures visible.
+
 ## 0.1.0-alpha.3 - 2026-10-23
 
 ### Improved

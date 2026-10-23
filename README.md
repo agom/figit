@@ -80,6 +80,10 @@ figit --version
 | `q` | Quit |
 | `Esc` | Close the active overlay |
 
+External repository changes refresh automatically. If filesystem watching is
+unavailable (for example, Linux watch limits are reached), Figit falls back to
+background polling every five seconds.
+
 ### Graph
 
 | Key | Action |

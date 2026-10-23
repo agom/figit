@@ -2483,7 +2483,7 @@ impl App {
                 Style::default().fg(Color::LightGreen),
             )]);
         }
-        if let Some(error) = self.watcher_error.as_ref().or(self.watch_error.as_ref()) {
+        if let Some(error) = self.watch_error.as_ref() {
             return Line::from(vec![Span::styled(
                 format!("figit | {branch} | Auto-refresh: {}", truncate(error, 52)),
                 Style::default().fg(Color::LightYellow),
@@ -2557,6 +2557,12 @@ impl App {
             // Popups own the keyboard; don't advertise panel keys behind them.
             return Line::from(Span::styled(
                 format!("figit | {branch}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        if self.watcher_poll_deadline.is_some() {
+            return Line::from(Span::styled(
+                format!("figit | {branch} | Auto-refresh: polling every 5s"),
                 Style::default().fg(Color::DarkGray),
             ));
         }

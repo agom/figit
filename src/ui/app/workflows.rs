@@ -1552,6 +1552,19 @@ impl App {
     }
 
     pub(super) fn poll_repository_refresh(&mut self) {
+        let now = Instant::now();
+        if self
+            .watcher_poll_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.watcher_poll_deadline = Some(now + watch::POLL_INTERVAL);
+            // Keep at most one pending refresh; existing guards prevent
+            // overlapping workers and defer refreshes during editing flows.
+            self.refresh_deadline = Some(
+                self.refresh_deadline
+                    .map_or(now, |pending| pending.min(now)),
+            );
+        }
         let mut watched = false;
         while self.watch_rx.try_recv().is_ok() {
             watched = true;
