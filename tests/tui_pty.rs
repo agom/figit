@@ -226,6 +226,27 @@ impl Tui {
         );
     }
 
+    fn wait_for_selected_text(&self, needle: &str) {
+        self.wait_until(
+            Duration::from_secs(5),
+            |contents| format!("{needle:?} did not gain selection:\n{contents}"),
+            |screen, contents| {
+                contents.lines().enumerate().find_map(|(row, line)| {
+                    let byte_column = line.find(needle)?;
+                    let column = line[..byte_column].chars().count();
+                    let cell = screen.screen().cell(row as u16, column as u16)?;
+                    (!cell.inverse()
+                        && cell.bold()
+                        && (matches!(
+                            cell.bgcolor(),
+                            vt100::Color::Rgb(48, 54, 68) | vt100::Color::Rgb(228, 232, 237)
+                        ) || cell.underline()))
+                    .then_some(())
+                })
+            },
+        );
+    }
+
     fn wait_for_graph_focus(&self) {
         self.wait_for_title_focus("Graph");
     }
@@ -704,7 +725,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
                 .cell(unstaged_file_row as u16, 98)
                 .unwrap()
                 .bgcolor(),
-            vt100::Color::Rgb(45, 50, 65),
+            vt100::Color::Rgb(48, 54, 68),
             "selected status row should fill the Unstaged width"
         );
     }
@@ -787,7 +808,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
             .cell(next_row as u16, next_column as u16)
             .unwrap()
             .bgcolor(),
-        vt100::Color::Rgb(45, 50, 65),
+        vt100::Color::Rgb(48, 54, 68),
         "file staging should advance selection within Unstaged"
     );
 
@@ -1415,7 +1436,7 @@ fn plus_pushes_the_selected_non_head_branch_and_returns_to_graph() {
     tui.wait_for("feature tip");
     // Startup selects HEAD (main); move up to the feature branch tip.
     tui.send(b"\x1b[A");
-    tui.wait_for_text_background("feature tip", vt100::Color::Rgb(45, 50, 65));
+    tui.wait_for_selected_text("feature tip");
     tui.send(b"+");
     tui.wait_for("Select push mode");
     tui.send(b"\r");
@@ -1431,7 +1452,7 @@ fn plus_pushes_the_selected_non_head_branch_and_returns_to_graph() {
         "pushing the selected branch should leave main alone"
     );
     tui.wait_for_graph_focus();
-    tui.wait_for_text_background("feature tip", vt100::Color::Rgb(45, 50, 65));
+    tui.wait_for_selected_text("feature tip");
     tui.quit();
 }
 
@@ -1450,13 +1471,13 @@ fn deleting_selected_branch_keeps_graph_focus_and_selects_a_remaining_commit() {
     tui.wait_for("ephemeral tip");
     // Startup selects HEAD (main); move up to the ephemeral branch tip.
     tui.send(b"\x1b[A");
-    tui.wait_for_text_background("ephemeral tip", vt100::Color::Rgb(45, 50, 65));
+    tui.wait_for_selected_text("ephemeral tip");
     tui.send(b"d");
     tui.wait_for("Delete branch ephemeral?");
     tui.send(b"\r");
     tui.wait_for("3 commits");
     tui.wait_for_graph_focus();
-    tui.wait_for_text_background("tip commit", vt100::Color::Rgb(45, 50, 65));
+    tui.wait_for_selected_text("tip commit");
     assert!(!git(
         repository.path(),
         &["show-ref", "--verify", "--quiet", "refs/heads/ephemeral"]
@@ -2049,7 +2070,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
                 .cell(conflict_row as u16, column as u16)
                 .unwrap()
                 .bgcolor(),
-            vt100::Color::Rgb(45, 50, 65),
+            vt100::Color::Rgb(48, 54, 68),
             "the file being resolved should stay highlighted in Unstaged"
         );
     }
@@ -2800,6 +2821,14 @@ fn escape_svg(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+fn svg_cell_color(cell: &vt100::Cell, foreground: &str, background: &str, text: bool) -> String {
+    if text != cell.inverse() {
+        svg_color(cell.fgcolor(), foreground)
+    } else {
+        svg_color(cell.bgcolor(), background)
+    }
+}
+
 fn terminal_svg(parser: &vt100::Parser, cols: u16, rows: u16) -> String {
     terminal_svg_with_defaults(parser, cols, rows, TERM_BG, TERM_FG)
 }
@@ -2846,13 +2875,13 @@ fn terminal_svg_with_defaults(
         while col < cols {
             let bg = screen.cell(row, col).map_or_else(
                 || background.to_string(),
-                |cell| svg_color(cell.bgcolor(), background),
+                |cell| svg_cell_color(cell, foreground, background, false),
             );
             let mut end = col + 1;
             while end < cols {
                 let next = screen.cell(row, end).map_or_else(
                     || background.to_string(),
-                    |cell| svg_color(cell.bgcolor(), background),
+                    |cell| svg_cell_color(cell, foreground, background, false),
                 );
                 if next != bg {
                     break;
@@ -2886,7 +2915,7 @@ fn terminal_svg_with_defaults(
             out.push_str(&format!(
                 "<text x=\"{:.1}\" y=\"{baseline:.1}\" fill=\"{}\" textLength=\"{cell_w:.1}\" lengthAdjust=\"spacingAndGlyphs\"",
                 ox + f32::from(col) * cell_w,
-                svg_color(cell.fgcolor(), foreground),
+                svg_cell_color(cell, foreground, background, true),
             ));
             if cell.bold() {
                 out.push_str(" font-weight=\"bold\"");
@@ -3120,19 +3149,64 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                         assert_eq!(cell.bgcolor(), vt100::Color::Default);
                     }
                 }
-            } else {
-                tui.wait_for_text_background(
-                    "a.txt",
-                    if theme == "light" {
-                        vt100::Color::Rgb(210, 226, 235)
-                    } else {
-                        vt100::Color::Rgb(45, 50, 65)
-                    },
-                );
             }
+            tui.wait_for_selected_text("a.txt");
+            {
+                let parser = tui.screen.lock().unwrap();
+                let screen = parser.screen();
+                let contents = screen.contents();
+                let (row, line) = contents
+                    .lines()
+                    .enumerate()
+                    .find(|(_, line)| line.contains("a.txt") && line.contains("b.txt"))
+                    .unwrap();
+                let col = |text: &str| line[..line.find(text).unwrap()].chars().count() as u16;
+                let cell = |column| screen.cell(row as u16, column).unwrap();
+                let expected_bg = match theme {
+                    "light" => vt100::Color::Rgb(228, 232, 237),
+                    "mono" => vt100::Color::Default,
+                    _ => vt100::Color::Rgb(48, 54, 68),
+                };
+                assert_eq!(cell(1).bgcolor(), expected_bg);
+                assert_eq!(cell(cols / 2 - 2).bgcolor(), expected_bg);
+                assert_eq!(
+                    cell(col("a.txt") - 2).fgcolor(),
+                    cell(col("b.txt") - 2).fgcolor(),
+                    "selection must preserve file icon colors"
+                );
+                if theme != "mono" {
+                    assert_ne!(cell(col("a.txt") - 2).fgcolor(), vt100::Color::Default);
+                    assert_eq!(
+                        cell(col("+1")).fgcolor(),
+                        if theme == "light" {
+                            vt100::Color::Rgb(28, 110, 52)
+                        } else {
+                            vt100::Color::Idx(2)
+                        }
+                    );
+                    assert_eq!(
+                        cell(col("-1")).fgcolor(),
+                        if theme == "light" {
+                            vt100::Color::Rgb(170, 43, 55)
+                        } else {
+                            vt100::Color::Idx(1)
+                        }
+                    );
+                }
+                assert!(
+                    !cell(col("+1")).bold(),
+                    "counts should retain normal weight"
+                );
+                assert_eq!(cell(col("a.txt")).underline(), theme == "mono");
+            }
+            assert!(
+                !tui.contents().contains("▸"),
+                "file lists should not show selection arrows"
+            );
             capture(&tui, "local");
             tui.send(b"\t");
             tui.wait_for_title_focus("Staged");
+            tui.wait_for_selected_text("b.txt");
             tui.send(b"c");
             tui.wait_for("Title");
             tui.send(b"Keep this message\x13");
@@ -3153,6 +3227,39 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
             tui.wait_for("Staged (1)");
             tui.send(b"g\t\t\x1b[B");
             tui.wait_for("Commit Details");
+            tui.wait_for_title_focus("Graph");
+            tui.wait_for_selected_text("base files");
+            {
+                let parser = tui.screen.lock().unwrap();
+                let screen = parser.screen();
+                let contents = screen.contents();
+                let (row, line) = contents
+                    .lines()
+                    .enumerate()
+                    .find(|(_, line)| line.contains('\u{e0b6}') && line.contains("main"))
+                    .expect("selected branch pill");
+                let cap_column = line.chars().position(|ch| ch == '\u{e0b6}').unwrap();
+                let cap = screen.cell(row as u16, cap_column as u16).unwrap();
+                let label = screen.cell(row as u16, cap_column as u16 + 2).unwrap();
+                let expected_bg = match theme {
+                    "light" => vt100::Color::Rgb(228, 232, 237),
+                    "mono" => vt100::Color::Default,
+                    _ => vt100::Color::Rgb(48, 54, 68),
+                };
+                assert_eq!(screen.cell(row as u16, 1).unwrap().bgcolor(), expected_bg);
+                assert!(!cap.inverse() && !label.inverse());
+                assert_eq!(
+                    cap.bgcolor(),
+                    expected_bg,
+                    "cap exterior should match selection"
+                );
+                assert_eq!(
+                    cap.fgcolor(),
+                    label.bgcolor(),
+                    "caps and pill fill must match"
+                );
+            }
+            capture(&tui, "selected-commit");
             tui.send(b"g");
             tui.wait_until_hidden("Local changes");
             tui.wait_for("read-only");
@@ -3163,6 +3270,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                     .any(|line| line.contains("Changes") && line.contains("Commit Details")),
                 "{screen}"
             );
+            tui.wait_for_selected_text("a.txt");
             capture(&tui, "history");
             tui.send(b"\t");
             tui.wait_for_title_focus("Commit Details");

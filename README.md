@@ -110,7 +110,9 @@ any focused panel. Selection, diff mode, and scroll position carry across layout
 
 The header shows the repository, branch, and working-tree state. Contextual keys
 appear along the bottom; `?` opens the full shortcut reference. Colors adapt to
-the terminal background, and selection markers remain visible with `NO_COLOR`.
+the terminal background. Focused graph and file selections use a subtle neutral background,
+preserving icon and change-count colors. With `NO_COLOR`, the active filename or
+commit subject is bold and underlined; inactive selections remain bold.
 
 File rows are prefixed with a Nerd Font file-type icon; install a
 [Nerd Font](https://www.nerdfonts.com/) to render them (without one the glyphs

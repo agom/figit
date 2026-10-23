@@ -184,6 +184,25 @@ fn status_rows_keep_line_totals_visible_in_narrow_columns() {
                 line.to_string().contains("-1"),
                 "removal count clipped at width {width}: {line:?}"
             );
+            assert_eq!(
+                line.spans
+                    .iter()
+                    .find(|span| span.content.contains("-1"))
+                    .unwrap()
+                    .style
+                    .fg,
+                Some(Color::Red)
+            );
+            assert_eq!(
+                line.spans
+                    .iter()
+                    .find(|span| span.content.contains('+'))
+                    .unwrap()
+                    .style
+                    .fg,
+                Some(Color::Green)
+            );
+            assert!(!line.style.add_modifier.contains(Modifier::REVERSED));
         }
         let removal_column = |line: &Line<'static>| {
             let text = line.to_string();
@@ -1545,6 +1564,60 @@ fn explicit_background_makes_pill_text_background_colored() {
     assert_eq!(cell.style().fg, Some(Color::Rgb(0, 0, 0)));
     assert_eq!(cell.style().bg, Some(lane));
     assert!(!cell.style().add_modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
+fn neutral_graph_selection_preserves_pills_and_monochrome_emphasis() {
+    for (background, no_color) in [
+        (Color::Rgb(28, 32, 41), false),
+        (Color::Rgb(250, 251, 252), false),
+        (Color::Rgb(28, 32, 41), true),
+    ] {
+        for active in [false, true] {
+            let mut app = App::new(synthetic_graph(), vec![], None);
+            app.bg = Some(background);
+            app.no_color = no_color;
+            app.focus = if active { Focus::Graph } else { Focus::Diff };
+            let mut line = app.render_row(&app.rows[0], 60);
+            app.style_graph_selection(&mut line, active);
+            let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(Paragraph::new(vec![line]), frame.area());
+                    app.apply_terminal_theme(frame.buffer_mut());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..60)
+                .map(|x| buffer.cell((x, 0)).unwrap().symbol())
+                .collect::<String>();
+            let cap_column = text.chars().position(|ch| ch == PILL_LEFT).unwrap() as u16;
+            let cap = buffer.cell((cap_column, 0)).unwrap();
+            let label = buffer.cell((cap_column + 2, 0)).unwrap();
+            let expected_bg = if no_color {
+                Color::Reset
+            } else {
+                app.selection_style(active).bg.unwrap()
+            };
+            assert_eq!(cap.bg, expected_bg);
+            assert_eq!(cap.fg, label.bg);
+            assert_eq!(buffer.cell((59, 0)).unwrap().bg, expected_bg);
+            assert!(!cap.modifier.contains(Modifier::REVERSED));
+            if !no_color {
+                assert_ne!(label.fg, label.bg);
+            }
+            let summary_column = text[..text.find("merge").unwrap()].chars().count() as u16;
+            let summary = buffer.cell((summary_column, 0)).unwrap();
+            assert_eq!(
+                summary.modifier.contains(Modifier::BOLD),
+                active || no_color
+            );
+            assert_eq!(
+                summary.modifier.contains(Modifier::UNDERLINED),
+                active && no_color
+            );
+        }
+    }
 }
 
 #[test]

@@ -26,20 +26,41 @@ impl App {
     }
 
     pub(super) fn selection_style(&self, active: bool) -> Style {
-        if active {
-            Style::default()
-                .bg(if self.light_theme() {
-                    Color::Rgb(210, 226, 235)
-                } else {
-                    Color::Rgb(45, 50, 65)
-                })
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().bg(if self.light_theme() {
-                Color::Rgb(235, 238, 241)
-            } else {
-                Color::Rgb(30, 34, 44)
-            })
+        let background = match (self.light_theme(), active) {
+            (false, true) => Color::Rgb(48, 54, 68),
+            (true, true) => Color::Rgb(228, 232, 237),
+            (false, false) => Color::Rgb(30, 34, 44),
+            (true, false) => Color::Rgb(235, 238, 241),
+        };
+        Style::default().bg(background)
+    }
+
+    pub(super) fn selection_text_style(&self, active: bool) -> Style {
+        let mut style = Style::default();
+        if active || self.no_color {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if active && self.no_color {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        style
+    }
+
+    /// Preserve semantic foregrounds and pill fills while highlighting the row.
+    pub(super) fn style_graph_selection(&self, line: &mut Line<'_>, active: bool) {
+        let selection = self.selection_style(active);
+        line.style = line.style.patch(selection);
+        for span in &mut line.spans {
+            if span.style.add_modifier.contains(Modifier::REVERSED) {
+                // The unknown-background pill uses reverse video locally.
+                span.style = span.style.bg(Color::Reset);
+            } else if matches!(span.content.as_ref(), "\u{e0b6}" | "\u{e0b4}")
+                || span.content.trim().is_empty()
+                || span.style.bg.is_none_or(|color| color == Color::Reset)
+            {
+                span.style = span.style.patch(selection);
+            }
+            // Pill interiors and search-match backgrounds retain their own fill.
         }
     }
 
@@ -288,13 +309,17 @@ impl App {
                 cell.bg = Color::Reset;
                 continue;
             }
+            // Cap glyphs are colored surfaces, not text: keep their fill equal
+            // to the pill interior in both themes.
+            if matches!(cell.symbol(), "\u{e0b6}" | "\u{e0b4}") {
+                if light {
+                    cell.bg = light_surface(cell.bg);
+                    cell.fg = light_surface(cell.fg);
+                }
+                continue;
+            }
             if light {
                 cell.bg = light_surface(cell.bg);
-                // The cap glyph is part of the colored surface, not text.
-                if matches!(cell.symbol(), "\u{e0b6}" | "\u{e0b4}") {
-                    cell.fg = light_surface(cell.fg);
-                    continue;
-                }
                 cell.fg = match cell.fg {
                     Color::White | Color::Gray => Color::Rgb(35, 42, 52),
                     Color::DarkGray => Color::Rgb(93, 104, 118),
