@@ -47,16 +47,19 @@ const PALETTE: [Color; 7] = [
 ];
 
 /// Glyph shown before a local branch that is also tracked on a remote.
-/// Uses a standard Unicode arrow, with no patched font requirement.
-const REMOTE_GLYPH: &str = "↔";
+/// Nerd Font glyphs stay monochrome and use the pill's text color;
+/// Unicode arrow symbols can still fall back to emoji despite text selectors.
+const REMOTE_GLYPH: &str = "\u{f07d}"; // fa-arrows_v
+const AHEAD_GLYPH: &str = "\u{eaa1}"; // cod-arrow_up
+const BEHIND_GLYPH: &str = "\u{ea9a}"; // cod-arrow_down
 
 /// Diffs longer than this are truncated before parsing, which is what keeps
 /// very large files from stalling the UI. Press `L` to load the full diff on
 /// demand.
 const MAX_RENDERED_DIFF_LINES: usize = 20_000;
 
-/// Plain-font tag label.
-const TAG_GLYPH: &str = "tag";
+/// Nerd Font Material Design tag icon.
+const TAG_GLYPH: &str = "\u{f04f9}";
 
 /// Ratatui's initializer installs a hook to restore raw mode and the alternate
 /// screen. Chain one that also releases the mouse-capture mode enabled below.
@@ -470,22 +473,36 @@ fn dim_graph_line(
             if let Some(foreground) = span.style.fg {
                 span.style = span.style.fg(darker_color(foreground, terminal_palette));
             }
+        } else if span.style.add_modifier.contains(Modifier::REVERSED) {
+            if let Some(fill) = span.style.fg {
+                let fill = presentation::pill_fill_color(
+                    darker_color(fill, terminal_palette),
+                    terminal_palette,
+                );
+                span.style = span.style.fg(fill).bg(presentation::pill_text_color(
+                    fill,
+                    terminal_bg,
+                    terminal_palette,
+                ));
+            }
         } else if let Some(background) = span.style.bg {
             if terminal_bg == Some(background) {
                 if let Some(foreground) = span.style.fg {
-                    span.style = span.style.fg(darker_color(foreground, terminal_palette));
+                    span.style = span.style.fg(presentation::pill_fill_color(
+                        darker_color(foreground, terminal_palette),
+                        terminal_palette,
+                    ));
                 }
             } else {
-                span.style = span.style.bg(darker_color(background, terminal_palette));
-                if let Some(foreground) = span.style.fg {
-                    if terminal_bg == Some(foreground) {
-                        span.style = span.style.fg(darker_color(foreground, terminal_palette));
-                    }
-                }
-            }
-        } else if span.style.add_modifier.contains(Modifier::REVERSED) {
-            if let Some(foreground) = span.style.fg {
-                span.style = span.style.fg(darker_color(foreground, terminal_palette));
+                let fill = presentation::pill_fill_color(
+                    darker_color(background, terminal_palette),
+                    terminal_palette,
+                );
+                span.style = span.style.bg(fill).fg(presentation::pill_text_color(
+                    fill,
+                    terminal_bg,
+                    terminal_palette,
+                ));
             }
         } else {
             span.style = span.style.fg(Color::DarkGray);
@@ -1601,6 +1618,9 @@ pub struct App {
     /// reloaded. Ignore watcher events inside this window.
     ignore_watch_until: Option<Instant>,
     watch_error: Option<String>,
+    watcher_error: Option<String>,
+    watch_setup: Option<watch::WatcherSetup>,
+    repository_watcher: Option<RecommendedWatcher>,
     graph_details_tx: Sender<GraphDetailsCompletion>,
     graph_details_rx: Receiver<GraphDetailsCompletion>,
     graph_details_deadline: Option<Instant>,
@@ -1932,8 +1952,8 @@ fn conflict_paths(status: &[StatusEntry]) -> HashSet<GitPath> {
         .collect()
 }
 
-/// Paths inside `.git` that change as a side effect of reading repository
-/// state. Reacting to them would make the watcher refresh itself in a loop.
+/// Ignore temporary Git lock files, while retaining completed index writes
+/// so external staging and unstaging update the UI.
 fn is_ignored_watch_path(path: &Path, git_dir: Option<&Path>) -> bool {
     let Some(git_dir) = git_dir else { return false };
     if !path.starts_with(git_dir) {
@@ -1943,7 +1963,7 @@ fn is_ignored_watch_path(path: &Path, git_dir: Option<&Path>) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    name == "index" || name.ends_with(".lock")
+    name.ends_with(".lock")
 }
 
 /// Commits loaded per history page. The first page renders immediately and
@@ -2457,6 +2477,9 @@ impl App {
             refresh_generation: 0,
             ignore_watch_until: None,
             watch_error: None,
+            watcher_error: None,
+            watch_setup: None,
+            repository_watcher: None,
             graph_details_tx,
             graph_details_rx,
             graph_details_deadline: None,
@@ -3142,77 +3165,31 @@ impl App {
         install_mouse_capture_panic_hook();
         let mouse = execute!(std::io::stdout(), EnableMouseCapture);
         crate::profile::mark("terminal ready");
-        let res = match mouse {
-            Ok(()) => {
-                self.start_update_check(false);
-                let watcher = match self.start_repository_watcher() {
-                    Ok(watcher) => watcher,
-                    Err(error) => {
-                        self.watch_error = Some(error.to_string());
-                        None
-                    }
-                };
-                crate::profile::mark("watcher ready");
-                if self.loading {
-                    self.refresh_deadline = Some(Instant::now());
-                }
-                self.event_loop(&mut terminal, watcher)
+        let res = (|| -> Result<()> {
+            mouse?;
+            // Paint before any filesystem watcher registration. On Linux a
+            // recursive watch visits every directory and can take seconds.
+            terminal.draw(|frame| self.draw(frame))?;
+            crate::profile::mark("first frame");
+            self.start_update_check(false);
+            self.start_repository_watcher();
+            if self.loading {
+                self.refresh_deadline = Some(Instant::now());
             }
-            Err(error) => Err(error.into()),
-        };
+            self.event_loop(&mut terminal)
+        })();
+        self.watch_setup = None;
+        self.repository_watcher = None;
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
         res
     }
 
-    fn start_repository_watcher(&self) -> notify::Result<Option<RecommendedWatcher>> {
-        let Some(backend) = self.backend.as_ref() else {
-            return Ok(None);
-        };
-        let paths = backend
-            .watch_paths()
-            .map_err(|error| notify::Error::generic(&error.to_string()))?;
-        let git_dir = paths
-            .iter()
-            .find(|path| path.file_name().is_some_and(|name| name == ".git"))
-            .cloned();
-        let sender = self.watch_tx.clone();
-        let mut watcher = RecommendedWatcher::new(
-            move |event: notify::Result<notify::Event>| {
-                let Ok(event) = event else { return };
-                // `git status` refreshes `.git/index`; reacting to that write
-                // would trigger another refresh that rewrites the index again,
-                // rebuilding the whole graph in a tight loop. Events without a
-                // path must still be treated as changes.
-                if !event.paths.is_empty()
-                    && event
-                        .paths
-                        .iter()
-                        .all(|path| is_ignored_watch_path(path, git_dir.as_deref()))
-                {
-                    return;
-                }
-                match sender.try_send(()) {
-                    Ok(()) | Err(TrySendError::Full(())) | Err(TrySendError::Disconnected(())) => {}
-                }
-            },
-            NotifyConfig::default(),
-        )?;
-        for path in paths {
-            watcher.watch(&path, RecursiveMode::Recursive)?;
-        }
-        Ok(Some(watcher))
-    }
-
-    fn event_loop(
-        &mut self,
-        terminal: &mut ratatui::DefaultTerminal,
-        _watcher: Option<RecommendedWatcher>,
-    ) -> Result<()> {
+    fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         let frame_time = Duration::from_millis(16);
-        let mut last_frame = Instant::now() - frame_time;
-        let mut first_frame = true;
+        let mut last_frame = Instant::now();
         loop {
+            self.poll_repository_watcher();
             self.poll_remote_operation();
             self.poll_update();
             self.poll_repository_refresh();
@@ -3222,10 +3199,6 @@ impl App {
             if last_frame.elapsed() >= frame_time {
                 terminal.draw(|f| self.draw(f))?;
                 last_frame = Instant::now();
-                if first_frame {
-                    first_frame = false;
-                    crate::profile::mark("first frame");
-                }
             }
             let wait = frame_time.saturating_sub(last_frame.elapsed());
             if event::poll(wait)? {
@@ -4416,6 +4389,9 @@ mod workflows;
 
 #[path = "app/presentation.rs"]
 mod presentation;
+
+#[path = "app/watch.rs"]
+mod watch;
 
 /// Query the terminal background and ANSI palette. The palette lets dimmed
 /// graph colors retain the user's theme hue while using a darker RGB shade.

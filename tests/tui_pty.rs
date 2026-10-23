@@ -11,6 +11,10 @@ use common::{configure_peer, configure_user, git, git_ok};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tempfile::TempDir;
 
+fn terminal_columns(text: &str) -> usize {
+    ratatui::text::Line::from(text).width()
+}
+
 struct Tui {
     _master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -218,7 +222,7 @@ impl Tui {
             |screen, contents| {
                 contents.lines().enumerate().find_map(|(row, line)| {
                     let byte_column = line.find(needle)?;
-                    let column = line[..byte_column].chars().count();
+                    let column = terminal_columns(&line[..byte_column]);
                     let cell = screen.screen().cell(row as u16, column as u16)?;
                     (cell.bgcolor() == expected).then_some(())
                 })
@@ -233,7 +237,7 @@ impl Tui {
             |screen, contents| {
                 contents.lines().enumerate().find_map(|(row, line)| {
                     let byte_column = line.find(needle)?;
-                    let column = line[..byte_column].chars().count();
+                    let column = terminal_columns(&line[..byte_column]);
                     let cell = screen.screen().cell(row as u16, column as u16)?;
                     (!cell.inverse()
                         && cell.bold()
@@ -260,7 +264,7 @@ impl Tui {
             |screen, contents| {
                 contents.lines().enumerate().find_map(|(row, line)| {
                     let column = line.find(title)?;
-                    let column = line[..column].chars().count();
+                    let column = terminal_columns(&line[..column]);
                     let cell = screen.screen().cell(row as u16, column as u16)?;
                     cell.bold().then_some(())
                 })
@@ -294,12 +298,12 @@ impl Tui {
                     .enumerate()
                     .filter_map(|(row, line)| line.rfind(input).map(|col| (row, col)))
                     .last()?;
-                let col = contents.lines().nth(row)?[..byte_col].chars().count();
+                let col = terminal_columns(&contents.lines().nth(row)?[..byte_col]);
                 let cell = screen.screen().cell(row as u16, col as u16)?;
                 let (cursor_row, cursor_col) = screen.screen().cursor_position();
                 (cell.bgcolor() == vt100::Color::Idx(14)
                     && cursor_row == row as u16
-                    && cursor_col == (col + input.chars().count()) as u16)
+                    && cursor_col == (col + terminal_columns(input)) as u16)
                     .then_some(())
             },
         );
@@ -313,8 +317,8 @@ impl Tui {
                 let cursor = screen.screen().cursor_position();
                 let line = contents.lines().nth(cursor.0 as usize)?;
                 let byte_col = line.find(input)?;
-                let col = line[..byte_col].chars().count();
-                (cursor.1 == (col + input.chars().count()) as u16).then_some(())
+                let col = terminal_columns(&line[..byte_col]);
+                (cursor.1 == (col + terminal_columns(input)) as u16).then_some(())
             },
         );
     }
@@ -734,7 +738,8 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
         .position(|line| line.contains("release/dolor"))
         .unwrap_or_else(|| panic!("release tip not visible:\n{initial_screen}"));
     let release_byte_column = graph_lines[release].find("release/dolor").unwrap();
-    let release_column = graph_lines[release][..release_byte_column].chars().count();
+    let release_column =
+        ratatui::text::Line::from(&graph_lines[release][..release_byte_column]).width();
     {
         let screen = tui.screen.lock().expect("screen lock");
         let label = screen
@@ -742,7 +747,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
             .cell(release as u16, release_column as u16)
             .unwrap();
         assert_eq!(label.bgcolor(), vt100::Color::Rgb(51, 76, 127));
-        assert_eq!(label.fgcolor(), vt100::Color::Rgb(17, 17, 17));
+        assert_eq!(label.fgcolor(), vt100::Color::Rgb(235, 239, 247));
         assert!(!label.dim());
         assert!(
             (0..100).any(|col| {
@@ -797,9 +802,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
         .unwrap()
         .find("z-discard.txt")
         .unwrap();
-    let next_column = after_stage.lines().nth(next_row).unwrap()[..next_column]
-        .chars()
-        .count();
+    let next_column = terminal_columns(&after_stage.lines().nth(next_row).unwrap()[..next_column]);
     assert_eq!(
         tui.screen
             .lock()
@@ -859,7 +862,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
         String::from_utf8_lossy(&current_branch.stdout).trim(),
         "release/dolor"
     );
-    tui.wait_for("✓ ↔ release/dolor");
+    tui.wait_for("✓ \u{f07d} release/dolor");
 
     // Move to the previous release commit, which has no branch ref. `c` must
     // check out that commit detached instead of following the release branch.
@@ -925,7 +928,7 @@ fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
             .find(|(_, line)| line.contains("context 1"))
             .unwrap_or_else(|| panic!("selected hunk context should be visible:\n{contents}"));
         let byte_column = context_row.1.find("context 1").unwrap();
-        let column = context_row.1[..byte_column].chars().count();
+        let column = terminal_columns(&context_row.1[..byte_column]);
         assert_eq!(
             screen
                 .screen()
@@ -986,7 +989,7 @@ fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
             .find(|(_, line)| line.contains("+first ours"))
             .expect("added row visible in file mode");
         let byte_column = added_row.1.find("+first ours").unwrap();
-        let column = added_row.1[..byte_column].chars().count();
+        let column = terminal_columns(&added_row.1[..byte_column]);
         assert_eq!(
             screen
                 .screen()
@@ -1101,7 +1104,7 @@ fn line_mode_stages_only_the_selected_added_line() {
             .find(|(_, line)| line.contains("+first ours"))
             .expect("added line visible in line mode");
         let byte_column = selected.1.find("+first ours").unwrap();
-        let column = selected.1[..byte_column].chars().count();
+        let column = terminal_columns(&selected.1[..byte_column]);
         assert_eq!(
             screen
                 .screen()
@@ -1275,7 +1278,7 @@ fn status_rows_keep_hunk_recap_and_diff_stats_aligned_for_multiple_files() {
     }
     let removal_column = |row: &str| {
         let byte = row.rfind("-1").unwrap();
-        row[..byte].chars().count()
+        terminal_columns(&row[..byte])
     };
     assert_eq!(
         removal_column(a_row),
@@ -1336,7 +1339,7 @@ fn fetch_picker_selects_a_remote_without_changing_branch_config() {
     tui.wait_for("origin");
     tui.wait_for_text_background("origin", vt100::Color::Idx(14));
     tui.send(b"\r");
-    tui.wait_for("↑1 ↓1");
+    tui.wait_for("\u{eaa1}1 \u{ea9a}1");
     assert_eq!(
         git_ok(
             repository.path(),
@@ -2061,9 +2064,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
             .unwrap()
             .find("file.txt")
             .unwrap();
-        let column = expanded.lines().nth(conflict_row).unwrap()[..column]
-            .chars()
-            .count();
+        let column = terminal_columns(&expanded.lines().nth(conflict_row).unwrap()[..column]);
         assert_eq!(
             screen
                 .screen()
@@ -2117,7 +2118,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
             .find(|(_, line)| line.contains(&base_short))
             .expect("merge-base commit should appear in the graph");
         let byte_column = base_row.1.find(&base_short).unwrap();
-        let column = base_row.1[..byte_column].chars().count();
+        let column = terminal_columns(&base_row.1[..byte_column]);
         assert_eq!(
             screen
                 .screen()
@@ -2157,10 +2158,10 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
             .position(|line| line.contains("Theirs") && line.contains("Ours"))
             .expect("side pane headers");
         let header = preview.lines().nth(side_header).unwrap();
-        let ours_title_column = header[..header.find("Ours").unwrap()].chars().count();
-        let theirs_title_column = header[..header.find("Theirs").unwrap()].chars().count();
-        let ours_border_column = header[..header.find('┌').unwrap()].chars().count();
-        let theirs_border_column = header[..header.rfind('┌').unwrap()].chars().count();
+        let ours_title_column = terminal_columns(&header[..header.find("Ours").unwrap()]);
+        let theirs_title_column = terminal_columns(&header[..header.find("Theirs").unwrap()]);
+        let ours_border_column = terminal_columns(&header[..header.find('┌').unwrap()]);
+        let theirs_border_column = terminal_columns(&header[..header.rfind('┌').unwrap()]);
         let cell_color = |column: usize| {
             screen
                 .screen()
@@ -2203,9 +2204,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
             .unwrap()
             .find("theirs")
             .unwrap();
-        let column = preview.lines().nth(side_row).unwrap()[..column]
-            .chars()
-            .count();
+        let column = terminal_columns(&preview.lines().nth(side_row).unwrap()[..column]);
         let theirs_commit_color = cell_color(theirs_title_column);
         let expected_diff_background = match theirs_commit_color {
             vt100::Color::Rgb(red, green, blue) => vt100::Color::Rgb(red / 2, green / 2, blue / 2),
@@ -2234,7 +2233,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
                 .skip(result_header + 1)
                 .find(|(_, line)| line.contains(needle))
                 .expect("base-relative result line");
-            let column = line[..line.find(needle).unwrap()].chars().count();
+            let column = terminal_columns(&line[..line.find(needle).unwrap()]);
             let color = screen
                 .screen()
                 .cell(row as u16, column as u16)
@@ -2504,7 +2503,7 @@ fn interactive_rebase_conflicts_can_be_resolved_and_continued() {
             .unwrap_or_else(|| panic!("side panes should be visible together:\n{contents}"));
         let color_at = |needle: &str| {
             let byte_column = side_header.1.find(needle).unwrap();
-            let column = side_header.1[..byte_column].chars().count();
+            let column = terminal_columns(&side_header.1[..byte_column]);
             screen
                 .screen()
                 .cell(side_header.0 as u16, column as u16)
@@ -2529,7 +2528,7 @@ fn interactive_rebase_conflicts_can_be_resolved_and_continued() {
             .find(|(_, line)| line.contains(&root))
             .unwrap_or_else(|| panic!("ours/base commit SHA should be in the graph:\n{contents}"));
         let byte_column = ours_graph_row.1.find(&root).unwrap();
-        let column = ours_graph_row.1[..byte_column].chars().count();
+        let column = terminal_columns(&ours_graph_row.1[..byte_column]);
         let base_sha_color = screen
             .screen()
             .cell(ours_graph_row.0 as u16, column as u16)
@@ -2906,10 +2905,8 @@ fn terminal_svg_with_defaults(
             let Some(cell) = screen.cell(row, col) else {
                 continue;
             };
-            let Some(glyph) = cell.contents().chars().next() else {
-                continue;
-            };
-            if glyph == ' ' {
+            let glyph = cell.contents();
+            if glyph.is_empty() || glyph == " " {
                 continue;
             }
             out.push_str(&format!(
@@ -2923,7 +2920,7 @@ fn terminal_svg_with_defaults(
             if cell.dim() {
                 out.push_str(" opacity=\"0.55\"");
             }
-            out.push_str(&format!(">{}</text>", escape_svg(&glyph.to_string())));
+            out.push_str(&format!(">{}</text>", escape_svg(glyph)));
         }
     }
 
@@ -3160,7 +3157,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                     .enumerate()
                     .find(|(_, line)| line.contains("a.txt") && line.contains("b.txt"))
                     .unwrap();
-                let col = |text: &str| line[..line.find(text).unwrap()].chars().count() as u16;
+                let col = |text: &str| terminal_columns(&line[..line.find(text).unwrap()]) as u16;
                 let cell = |column| screen.cell(row as u16, column).unwrap();
                 let expected_bg = match theme {
                     "light" => vt100::Color::Rgb(228, 232, 237),
@@ -3296,4 +3293,44 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
             tui.quit();
         }
     }
+}
+
+#[test]
+fn external_index_only_changes_refresh_staging_lists() {
+    let repository = common::review_fixture("content");
+    let path = repository.path();
+    let mut tui = Tui::launch(path);
+    tui.wait_for("Unstaged (1)");
+    git_ok(path, &["add", "file.txt"]);
+    tui.wait_for("Staged (1)");
+    tui.wait_for("Unstaged (0)");
+    git_ok(path, &["reset", "--quiet", "HEAD", "--", "file.txt"]);
+    tui.wait_for("Unstaged (1)");
+    tui.wait_for("Staged (0)");
+    tui.quit();
+}
+
+#[test]
+fn untracked_directory_files_refresh_and_stage_individually() {
+    let repository = common::review_fixture("untracked-directory");
+    let path = repository.path();
+    let mut tui = Tui::launch(path);
+    tui.wait_for("Unstaged (2)");
+    tui.wait_for("file.rs");
+    tui.wait_for("other.txt");
+    tui.wait_for("+nested file");
+    tui.send(b" ");
+    tui.wait_for("Staged (1)");
+    tui.wait_for("Unstaged (1)");
+    assert_eq!(
+        git_ok(path, &["diff", "--cached", "--name-only"]),
+        "new folder/deeper/file.rs"
+    );
+    std::fs::create_dir_all(path.join("another/new")).unwrap();
+    std::fs::write(path.join("another/new/live.txt"), "live directory change\n").unwrap();
+    tui.wait_for("Unstaged (2)");
+    tui.wait_for("live.txt");
+    std::fs::write(path.join("file.txt"), "external tracked edit\n").unwrap();
+    tui.wait_for("Unstaged (3)");
+    tui.quit();
 }

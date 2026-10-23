@@ -2290,3 +2290,42 @@ fn conflict_file_read_errors_are_not_reported_as_deletion() {
         .conflict_versions(&GitPath::from("file.txt"))
         .is_err());
 }
+
+#[test]
+fn status_expands_untracked_directories_and_does_not_write_the_index() {
+    let repository = common::review_fixture("untracked-directory");
+    let path = repository.path();
+    git_ok(path, &["config", "status.showUntrackedFiles", "no"]);
+    let backend = backend::open(path).unwrap();
+    let index = path.join(".git/index");
+    // Make the cached stat information stale without changing file contents.
+    std::fs::write(path.join("file.txt"), "base\n").unwrap();
+    let before = std::fs::read(&index).unwrap();
+    let modified = std::fs::metadata(&index).unwrap().modified().unwrap();
+    let entries = backend.status().unwrap();
+    let paths = entries
+        .iter()
+        .map(|entry| entry.path.display().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["new folder/deeper/file.rs", "new folder/other.txt"]);
+    assert_eq!(
+        std::fs::read(&index).unwrap(),
+        before,
+        "reading status must not rewrite the index"
+    );
+    assert_eq!(
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+        modified
+    );
+    let stats = backend.status_diff_stats(&entries).unwrap();
+    assert!(stats
+        .iter()
+        .any(|stat| stat.path == "new folder/deeper/file.rs" && !stat.staged && stat.added == 2));
+    let diff = backend
+        .diff(
+            &GitPath::from("new folder/deeper/file.rs"),
+            DiffTarget::Worktree,
+        )
+        .unwrap();
+    assert!(diff.contains("+nested file"));
+}

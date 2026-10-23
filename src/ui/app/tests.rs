@@ -91,10 +91,14 @@ fn large_diffs_are_truncated_until_explicitly_loaded() {
 }
 
 #[test]
-fn watcher_ignores_git_index_writes_but_not_worktree_changes() {
+fn watcher_ignores_locks_but_keeps_index_and_worktree_changes() {
     let git_dir = Path::new("/repo/.git");
-    // `git status` rewrites the index; reacting would loop forever.
-    assert!(is_ignored_watch_path(&git_dir.join("index"), Some(git_dir)));
+    // Read-only status no longer rewrites the index. Completed writes can be
+    // external staging operations and must be observed.
+    assert!(!is_ignored_watch_path(
+        &git_dir.join("index"),
+        Some(git_dir)
+    ));
     assert!(is_ignored_watch_path(
         &git_dir.join("index.lock"),
         Some(git_dir)
@@ -289,9 +293,9 @@ fn dimmed_graph_keeps_lane_color_and_darkens_it_instead_of_graying_it() {
 
     assert_eq!(line.spans[0].style.fg, Some(Color::Cyan));
     assert_eq!(line.spans[2].style.fg, Some(Color::DarkGray));
-    assert_eq!(line.spans[3].style.bg, Some(Color::Green));
-    assert_eq!(line.spans[4].style.fg, Some(Color::Rgb(40, 40, 40)));
-    assert_eq!(line.spans[4].style.bg, Some(Color::Blue));
+    assert_eq!(line.spans[3].style.bg, Some(Color::Rgb(0, 205, 0)));
+    assert_eq!(line.spans[4].style.fg, Some(Color::Rgb(235, 239, 247)));
+    assert_eq!(line.spans[4].style.bg, Some(Color::Rgb(0, 0, 238)));
     assert_eq!(line.spans[5].style.fg, line.spans[4].style.bg);
     assert!(!line.spans[4].style.add_modifier.contains(Modifier::DIM));
     assert!(!line.spans[5].style.add_modifier.contains(Modifier::DIM));
@@ -749,7 +753,13 @@ fn branch_label_matches_lane_color() {
         .expect("main label cell");
     let cell = buffer.cell((main_column, 0)).expect("main label cell");
     // Reverse-video pill: fg carries the branch color and is swapped to bg.
-    assert_eq!(cell.style().fg, Some(expected));
+    assert_eq!(
+        cell.style().fg,
+        Some(presentation::pill_fill_color(
+            expected,
+            &app.terminal_palette
+        ))
+    );
     assert!(
         cell.style().add_modifier.contains(Modifier::REVERSED),
         "label must be a negative (reversed) pill"
@@ -770,9 +780,177 @@ fn local_branch_label_shows_ahead_and_behind_counts() {
     app.rebuild_graph_indexes();
     let row = app.render_row(&app.rows[0], 100).to_string();
     assert!(
-        row.contains("main ↑3 ↓2"),
+        row.contains(&format!("main {AHEAD_GLYPH}3 {BEHIND_GLYPH}2")),
         "tracking counts missing from branch label: {row}"
     );
+}
+
+#[test]
+fn pill_indicators_use_nerd_glyphs_and_share_the_branch_foreground() {
+    for background in [
+        None,
+        Some(Color::Rgb(0, 0, 0)),
+        Some(Color::Rgb(250, 250, 250)),
+        Some(Color::White),
+    ] {
+        for active in [false, true] {
+            let mut graph = synthetic_graph();
+            graph.refs.push(RefLabel {
+                kind: RefKind::RemoteBranch,
+                name: "origin/main".into(),
+                id: "m".into(),
+            });
+            graph.branch_tracking.push(BranchTracking {
+                branch: "main".into(),
+                upstream: "origin/main".into(),
+                ahead: 3,
+                behind: 2,
+                gone: false,
+            });
+            let mut app = App::new(graph, vec![], None);
+            app.bg = background;
+            let mut line = app.render_row(&app.rows[0], 100);
+            app.style_graph_selection(&mut line, active);
+            let mut terminal = Terminal::new(TestBackend::new(100, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(Paragraph::new(vec![line]), frame.area());
+                    app.apply_terminal_theme(frame.buffer_mut());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let label = (0..100)
+                .map(|column| buffer.cell((column, 0)).unwrap())
+                .find(|cell| cell.symbol() == "m")
+                .unwrap();
+            for glyph in [REMOTE_GLYPH, AHEAD_GLYPH, BEHIND_GLYPH] {
+                assert!(
+                    glyph.chars().all(|ch| matches!(ch as u32, 0xe000..=0xf8ff)),
+                    "indicators must use private-use glyphs rather than emoji-capable symbols"
+                );
+                let indicator = (0..100)
+                    .map(|column| buffer.cell((column, 0)).unwrap())
+                    .find(|cell| cell.symbol() == glyph)
+                    .expect("Nerd Font indicator");
+                assert_eq!(indicator.fg, label.fg);
+                assert_eq!(indicator.bg, label.bg);
+                assert_eq!(indicator.modifier, label.modifier);
+                assert_eq!(Line::from(glyph).width(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn dimmed_pill_text_and_indicators_have_readable_contrast() {
+    let mut graph = synthetic_graph();
+    graph.refs.push(RefLabel {
+        kind: RefKind::RemoteBranch,
+        name: "origin/main".into(),
+        id: "m".into(),
+    });
+    graph.branch_tracking.push(BranchTracking {
+        branch: "main".into(),
+        upstream: "origin/main".into(),
+        ahead: 3,
+        behind: 4,
+        gone: false,
+    });
+    let mut app = App::new(graph, vec![], None);
+    app.bg = Some(Color::Rgb(30, 30, 46));
+    app.terminal_palette[12] = Some(Color::Rgb(116, 168, 252));
+    app.current_branch_ids.clear();
+    app.focus = Focus::Graph;
+    let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let y = app.graph_area.y + 1;
+    let label = (app.graph_area.x + 1..app.graph_area.right() - 1)
+        .map(|x| buffer.cell((x, y)).unwrap())
+        .find(|cell| cell.symbol() == "m")
+        .unwrap();
+    assert_eq!(label.bg, Color::Rgb(58, 84, 126));
+    assert!(
+        matches!(label.fg, Color::Rgb(r, g, b) if r >= 200 && g >= 200 && b >= 200),
+        "dark pill requires an explicitly light foreground: {:?}",
+        label.fg
+    );
+    for glyph in [REMOTE_GLYPH, AHEAD_GLYPH, BEHIND_GLYPH] {
+        let cell = (app.graph_area.x + 1..app.graph_area.right() - 1)
+            .map(|x| buffer.cell((x, y)).unwrap())
+            .find(|cell| cell.symbol() == glyph)
+            .unwrap();
+        assert_eq!((cell.fg, cell.bg), (label.fg, label.bg));
+    }
+    if let Ok(path) = std::env::var("FIGIT_PILL_PREVIEW") {
+        let css = |color: Color, fallback: &str| match color {
+            Color::Rgb(r, g, b) => format!("rgb({r},{g},{b})"),
+            _ => fallback.to_owned(),
+        };
+        let mut html = String::from("<!doctype html><meta charset='utf-8'><style>body{background:#1e1e2e;color:#cdd6f4;padding:24px;font-family:monospace}pre{font:18px 'JetBrainsMonoNL Nerd Font Mono',monospace}h3{font:16px system-ui}</style><h3>Actual Figit render: explicitly contrasted pill text</h3><pre>");
+        for x in app.graph_area.x + 1..app.graph_area.right() - 1 {
+            let cell = buffer.cell((x, y)).unwrap();
+            let text = cell
+                .symbol()
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            html.push_str(&format!(
+                "<span style='color:{};background:{}'>{text}</span>",
+                css(cell.fg, "#cdd6f4"),
+                css(cell.bg, "#1e1e2e")
+            ));
+        }
+        html.push_str("</pre><p>Foreground: RGB(235,239,247) · Fill: RGB(58,84,126)</p>");
+        std::fs::write(path, html).unwrap();
+    }
+}
+
+#[test]
+fn rendered_pills_keep_contrast_in_light_dark_and_dimmed_rows() {
+    let luminance = |color: Color| {
+        let Color::Rgb(r, g, b) = color else {
+            panic!("expected resolved RGB, got {color:?}")
+        };
+        let channel = |value: u8| {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    };
+    for light in [false, true] {
+        for dimmed in [false, true] {
+            for lane in 0..PALETTE.len() {
+                let mut app = App::new(synthetic_graph(), vec![], None);
+                app.bg = Some(if light {
+                    Color::Rgb(250, 250, 250)
+                } else {
+                    Color::Rgb(30, 30, 46)
+                });
+                app.rows[0].colors.fill(lane);
+                if dimmed {
+                    app.current_branch_ids.clear();
+                }
+                let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let row = app.graph_area.y + 1;
+                let label = (app.graph_area.x + 1..app.graph_area.right() - 1)
+                    .map(|x| buffer.cell((x, row)).unwrap())
+                    .find(|cell| cell.symbol() == "m")
+                    .unwrap();
+                let foreground = luminance(label.fg);
+                let background = luminance(label.bg);
+                let ratio =
+                    (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+                assert!(ratio >= 4.5, "light={light}, dimmed={dimmed}, lane={lane}, fg={:?}, bg={:?}, contrast={ratio}", label.fg, label.bg);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1542,7 +1720,7 @@ fn scrolling_reveals_later_rows() {
 }
 
 #[test]
-fn explicit_background_makes_pill_text_background_colored() {
+fn explicit_pill_foreground_is_readable_against_its_fill() {
     let mut app = App::new(synthetic_graph(), vec![], None);
     app.bg = Some(Color::Rgb(0, 0, 0));
     let backend = TestBackend::new(50, 8);
@@ -1557,12 +1735,15 @@ fn explicit_background_makes_pill_text_background_colored() {
         .find(|&column| buffer.cell((column, 0)).unwrap().symbol() == "m")
         .expect("main label cell");
     let cell = buffer.cell((main_column, 0)).expect("main label cell");
-    // Explicit style: text (and caps) in the background color, pill bg =
-    // the branch's lane color, and no reverse-video needed.
+    // Choose readable text against the actual fill rather than relying on
+    // terminal contrast correction, which may treat icons differently.
     let nc = app.rows[0].node_col.unwrap();
     let lane = PALETTE[app.rows[0].colors[nc] % PALETTE.len()];
-    assert_eq!(cell.style().fg, Some(Color::Rgb(0, 0, 0)));
-    assert_eq!(cell.style().bg, Some(lane));
+    assert_eq!(cell.style().fg, Some(Color::Rgb(255, 255, 255)));
+    assert_eq!(
+        cell.style().bg,
+        Some(presentation::pill_fill_color(lane, &app.terminal_palette))
+    );
     assert!(!cell.style().add_modifier.contains(Modifier::REVERSED));
 }
 
@@ -2204,4 +2385,120 @@ fn whole_file_side_confirmation_restores_git_file_mode() {
         0
     );
     assert!(review_git(directory.path(), &["ls-files", "-u"]).is_empty());
+}
+
+#[test]
+fn slow_watcher_setup_does_not_block_rendering_or_quitting() {
+    let (directory, _) = review_app("content");
+    let mut app = App::loading(crate::backend::open(directory.path()).unwrap());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    app.watch_setup = Some(watch::spawn_setup(move || {
+        started_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        Err("deliberately delayed watcher".into())
+    }));
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        app.watch_setup.as_ref().unwrap().try_recv(),
+        Err(TryRecvError::Empty)
+    ));
+    app.poll_repository_watcher();
+    let frame = render_full_app(&mut app, 120, 40);
+    assert!(
+        frame.contains("Loading"),
+        "loading UI should render while watcher is blocked"
+    );
+    assert!(app.handle_key(KeyEvent::from(KeyCode::Char('q'))));
+    // Closing the receiver does not wait for the setup thread or lose ownership
+    // of an eventual watcher: the worker drops it if sending its result fails.
+    app.watch_setup = None;
+    release_tx.send(()).unwrap();
+}
+
+#[test]
+fn watcher_failure_remains_visible_after_successful_repository_refresh() {
+    let (directory, mut app) = review_app("content");
+    let (sender, receiver) = mpsc::channel();
+    app.watch_setup = Some(receiver);
+    sender.send(Err("watch limit reached".into())).unwrap();
+    app.poll_repository_watcher();
+    app.reload_external_snapshot(load_repository_snapshot(directory.path()).unwrap());
+    assert!(app
+        .status_line()
+        .to_string()
+        .contains("watch limit reached"));
+    assert!(app.watch_setup.is_none());
+    assert!(app.repository_watcher.is_none());
+}
+
+#[test]
+fn watcher_completion_catches_changes_made_during_registration() {
+    let (directory, mut app) = review_app("content");
+    let path = directory.path().to_path_buf();
+    let events = app.watch_tx.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    app.watch_setup = Some(watch::spawn_setup(move || {
+        started_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        watch::create_watcher(&path, events)
+    }));
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    app.reload_external_snapshot(load_repository_snapshot(directory.path()).unwrap());
+    std::fs::write(directory.path().join("during-setup.txt"), "new file\n").unwrap();
+    assert!(!app
+        .local_status
+        .iter()
+        .any(|entry| entry.path == "during-setup.txt"));
+    release_tx.send(()).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while app.repository_watcher.is_none() && Instant::now() < until {
+        app.poll_repository_watcher();
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        app.repository_watcher.is_some(),
+        "watcher setup failed: {:?}",
+        app.watcher_error
+    );
+    // A pending filesystem event must not postpone the immediate catch-up.
+    let _ = app.watch_tx.try_send(());
+    app.poll_repository_refresh();
+    assert!(app.refresh_in_progress);
+    while !app
+        .local_status
+        .iter()
+        .any(|entry| entry.path == "during-setup.txt")
+        && Instant::now() < until
+    {
+        app.poll_repository_refresh();
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app
+        .local_status
+        .iter()
+        .any(|entry| entry.path == "during-setup.txt"));
+}
+
+#[test]
+fn watcher_roots_skip_descendants_and_retain_external_worktree_metadata() {
+    let paths = [
+        "/repo/.git/refs",
+        "/common/.git/worktrees/tree",
+        "/repo",
+        "/repo/.git",
+        "/common/.git",
+        "/repo-other",
+        "/repo",
+    ];
+    let roots = watch::watch_roots(paths.into_iter().map(PathBuf::from).collect());
+    assert_eq!(
+        roots,
+        [
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo-other"),
+            PathBuf::from("/common/.git")
+        ]
+    );
 }

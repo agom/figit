@@ -52,8 +52,8 @@ impl App {
         line.style = line.style.patch(selection);
         for span in &mut line.spans {
             if span.style.add_modifier.contains(Modifier::REVERSED) {
-                // The unknown-background pill uses reverse video locally.
-                span.style = span.style.bg(Color::Reset);
+                // Fallback pills explicitly set both reverse-video colors.
+                continue;
             } else if matches!(span.content.as_ref(), "\u{e0b6}" | "\u{e0b4}")
                 || span.content.trim().is_empty()
                 || span.style.bg.is_none_or(|color| color == Color::Reset)
@@ -162,7 +162,10 @@ impl App {
                 if tracking.gone {
                     " · upstream gone".to_string()
                 } else if tracking.ahead != 0 || tracking.behind != 0 {
-                    format!(" ↑{} ↓{}", tracking.ahead, tracking.behind)
+                    format!(
+                        " {AHEAD_GLYPH}{} {BEHIND_GLYPH}{}",
+                        tracking.ahead, tracking.behind
+                    )
                 } else {
                     String::new()
                 }
@@ -319,7 +322,18 @@ impl App {
                 continue;
             }
             if light {
+                // A pill may still have a dark fill in a light terminal. Its
+                // explicitly contrasted foreground must not be darkened like
+                // a syntax token on the terminal's default white background.
+                let contrasted = matches!(
+                    cell.fg,
+                    Color::Rgb(235, 239, 247) | Color::Rgb(255, 255, 255)
+                ) && cell.bg != Color::Reset
+                    && cell.fg == pill_text_color(cell.bg, self.bg, &self.terminal_palette);
                 cell.bg = light_surface(cell.bg);
+                if contrasted {
+                    continue;
+                }
                 cell.fg = match cell.fg {
                     Color::White | Color::Gray => Color::Rgb(35, 42, 52),
                     Color::DarkGray => Color::Rgb(93, 104, 118),
@@ -393,5 +407,128 @@ fn light_surface(color: Color) -> Color {
             Color::Rgb(base - (max - r), base - (max - g), base - (max - b))
         }
         other => other,
+    }
+}
+
+/// Pick a foreground with at least 4.5:1 contrast against the displayed pill
+/// fill, including terminal palette colors and the light-theme transformation.
+pub(super) fn pill_text_color(
+    fill: Color,
+    terminal_bg: Option<Color>,
+    palette: &TerminalAnsiPalette,
+) -> Color {
+    let light = matches!(terminal_bg, Some(Color::Rgb(r, g, b)) if
+        u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 > 150_000);
+    let fill = if light { light_surface(fill) } else { fill };
+    let luminance = |[r, g, b]: [u8; 3]| {
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    let background = luminance(pill_rgb(fill, palette));
+    let contrast = |rgb| {
+        let foreground = luminance(rgb);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    };
+    let dark = [24, 28, 36];
+    let bright = [235, 239, 247];
+    let mut chosen = if contrast(dark) >= contrast(bright) {
+        dark
+    } else {
+        bright
+    };
+    if contrast(chosen) < 4.5 {
+        chosen = if contrast([0, 0, 0]) >= contrast([255, 255, 255]) {
+            [0, 0, 0]
+        } else {
+            [255, 255, 255]
+        };
+    }
+    Color::Rgb(chosen[0], chosen[1], chosen[2])
+}
+
+pub(super) fn pill_fill_color(color: Color, palette: &TerminalAnsiPalette) -> Color {
+    if matches!(color, Color::Rgb(..))
+        || matches!(
+            palette.get(pill_color_index(color) as usize),
+            Some(Some(Color::Rgb(..)))
+        )
+    {
+        return color;
+    }
+    // If a terminal cannot report its ANSI palette, lock the fallback fill to
+    // RGB too so its foreground contrast does not depend on an unknown theme.
+    let [r, g, b] = pill_rgb(color, palette);
+    Color::Rgb(r, g, b)
+}
+
+fn pill_color_index(color: Color) -> u8 {
+    match color {
+        Color::Rgb(..) => 0,
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Indexed(index) => index,
+        Color::Reset => 0,
+    }
+}
+
+fn pill_rgb(color: Color, palette: &TerminalAnsiPalette) -> [u8; 3] {
+    if let Color::Rgb(r, g, b) = color {
+        return [r, g, b];
+    }
+    let index = pill_color_index(color);
+    if let Some(Some(Color::Rgb(r, g, b))) = palette.get(index as usize) {
+        return [*r, *g, *b];
+    }
+    const ANSI: [[u8; 3]; 16] = [
+        [0, 0, 0],
+        [205, 0, 0],
+        [0, 205, 0],
+        [205, 205, 0],
+        [0, 0, 238],
+        [205, 0, 205],
+        [0, 205, 205],
+        [229, 229, 229],
+        [127, 127, 127],
+        [255, 0, 0],
+        [0, 255, 0],
+        [255, 255, 0],
+        [92, 92, 255],
+        [255, 0, 255],
+        [0, 255, 255],
+        [255, 255, 255],
+    ];
+    match index {
+        0..=15 => ANSI[index as usize],
+        16..=231 => {
+            let value = index - 16;
+            let channel = |value: u8| if value == 0 { 0 } else { 55 + value * 40 };
+            [
+                channel(value / 36),
+                channel((value / 6) % 6),
+                channel(value % 6),
+            ]
+        }
+        _ => [8 + (index - 232) * 10; 3],
     }
 }

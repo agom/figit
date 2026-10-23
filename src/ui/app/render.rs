@@ -2292,10 +2292,10 @@ impl App {
                         text.push_str(" ✗");
                     }
                     if tracking.ahead > 0 {
-                        text.push_str(&format!(" ↑{}", tracking.ahead));
+                        text.push_str(&format!(" {AHEAD_GLYPH}{}", tracking.ahead));
                     }
                     if tracking.behind > 0 {
-                        text.push_str(&format!(" ↓{}", tracking.behind));
+                        text.push_str(&format!(" {BEHIND_GLYPH}{}", tracking.behind));
                     }
                 }
             }
@@ -2304,15 +2304,16 @@ impl App {
                 break;
             }
             text = truncate(&text, label_budget.saturating_sub(5));
+            let color = presentation::pill_fill_color(color, &self.terminal_palette);
             match self.bg {
                 // Rounded caps use the same color as the pill fill.
                 Some(bg) => {
                     let text_style = Style::default()
-                        .fg(if self.light_theme() {
-                            Color::Rgb(35, 42, 52)
-                        } else {
-                            bg
-                        })
+                        .fg(presentation::pill_text_color(
+                            color,
+                            self.bg,
+                            &self.terminal_palette,
+                        ))
                         .bg(color);
                     let cap_style = Style::default().fg(color).bg(bg);
                     line.push_span(Span::styled(PILL_LEFT.to_string(), cap_style));
@@ -2321,7 +2322,14 @@ impl App {
                 }
                 // Use reverse video when the terminal background is unknown.
                 None => {
-                    let style = Style::default().fg(color).add_modifier(Modifier::REVERSED);
+                    let style = Style::default()
+                        .fg(color)
+                        .bg(presentation::pill_text_color(
+                            color,
+                            self.bg,
+                            &self.terminal_palette,
+                        ))
+                        .add_modifier(Modifier::REVERSED);
                     line.push_span(Span::styled(format!(" {text} "), style));
                 }
             }
@@ -2475,7 +2483,7 @@ impl App {
                 Style::default().fg(Color::LightGreen),
             )]);
         }
-        if let Some(error) = &self.watch_error {
+        if let Some(error) = self.watcher_error.as_ref().or(self.watch_error.as_ref()) {
             return Line::from(vec![Span::styled(
                 format!("figit | {branch} | Auto-refresh: {}", truncate(error, 52)),
                 Style::default().fg(Color::LightYellow),

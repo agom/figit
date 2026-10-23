@@ -31,7 +31,9 @@ cargo run -- path/to/repo      # or: cargo run -- . for the current repo
 
 Run `FIGIT_PROFILE_STARTUP=1 figit .` to collect timings from process start
 through the first graph snapshot. The report is printed after you quit, once the
-TUI has restored the terminal, so it never corrupts the screen.
+TUI has restored the terminal, so it never corrupts the screen. The `first frame`
+mark precedes background watcher setup; `watcher ready` records when monitoring
+is installed and a catch-up refresh is scheduled.
 
 ## Repository layout
 

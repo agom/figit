@@ -25,6 +25,13 @@ case "$scenario" in
     content)
         for i in {1..60}; do printf 'changed line %s\n' "$i"; done > "$repo/file.txt"
         ;;
+    untracked-directory)
+        mkdir -p "$repo/new folder/deeper"
+        printf 'nested file\nsecond line\n' > "$repo/new folder/deeper/file.rs"
+        printf 'sibling file\n' > "$repo/new folder/other.txt"
+        printf '*.tmp\n' > "$repo/.git/info/exclude"
+        printf 'ignored\n' > "$repo/new folder/ignored.tmp"
+        ;;
     history)
         printf 'old-history-content\n' > "$repo/file.txt"
         printf 'old-only\n' > "$repo/old-only.txt"
