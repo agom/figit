@@ -1566,7 +1566,13 @@ impl App {
                 }
                 _ => Duration::from_millis(300),
             };
-            self.refresh_deadline = Some(Instant::now() + delay);
+            let deadline = Instant::now() + delay;
+            // Coalesce into the earliest pending refresh. In particular, a
+            // watcher-ready catch-up must not be delayed by a stream of events.
+            self.refresh_deadline = Some(
+                self.refresh_deadline
+                    .map_or(deadline, |pending| pending.min(deadline)),
+            );
         }
 
         while let Ok(completion) = self.refresh_rx.try_recv() {

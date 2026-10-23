@@ -860,7 +860,15 @@ impl super::GitBackend for GixBackend {
 
     fn status(&self) -> Result<Vec<StatusEntry>> {
         let output = Command::new("git")
-            .args(["status", "--porcelain=v1", "-z"])
+            // Status is read-only for the UI: optional index refreshes would
+            // generate watcher events and obscure real external staging writes.
+            .args([
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "-z",
+            ])
             .current_dir(&self.workdir)
             .output()
             .with_context(|| "run git status")?;

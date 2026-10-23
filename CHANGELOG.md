@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.0-alpha.3 - 2026-10-23
+
+### Improved
+
+- Render the initial screen before registering filesystem watchers, keeping startup responsive in large repositories on Linux.
+- Avoid redundant recursive watches and traversal of symlinked directories; refresh once registration completes to catch changes made during setup.
+- Use vertical tracking arrows and Nerd Font tag and ahead/behind indicators in branch pills.
+
+### Fixed
+
+- Unreadable branch-pill indicators and text after dimming, with explicit contrasting foreground colors across terminal themes.
+- Local changes failing to refresh after external staging and unstaging.
+- New untracked directories appearing as a single folder instead of individually selectable files.
+- Read-only status checks unnecessarily updating the Git index.
+- Watcher setup errors disappearing after successful repository refreshes.
+
 ## 0.1.0-alpha.2 - 2026-10-23
 
 ### Improved

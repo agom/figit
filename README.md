@@ -114,7 +114,7 @@ the terminal background. Focused graph and file selections use a subtle neutral 
 preserving icon and change-count colors. With `NO_COLOR`, the active filename or
 commit subject is bold and underlined; inactive selections remain bold.
 
-File rows are prefixed with a Nerd Font file-type icon; install a
+File rows and branch indicators use Nerd Font icons; install a
 [Nerd Font](https://www.nerdfonts.com/) to render them (without one the glyphs
 show as placeholder boxes).
 
