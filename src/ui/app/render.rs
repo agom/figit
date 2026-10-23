@@ -79,18 +79,20 @@ impl App {
             let mut lines: Vec<Line> = Vec::with_capacity(height);
             let has_local = !self.local_status.is_empty();
             if has_local && self.scroll_y == 0 && lines.len() < height {
-                let style = if self.selected_graph == 0 {
-                    self.selection_style(graph_focused).fg(Color::LightYellow)
-                } else {
-                    Style::default()
-                        .fg(Color::LightYellow)
-                        .add_modifier(Modifier::BOLD)
-                };
                 let mut local_line = Line::from(Span::styled(
                     format!("✎ Local changes ({})", self.local_status.len()),
-                    style,
+                    Style::default()
+                        .fg(Color::LightYellow)
+                        .patch(if self.selected_graph == 0 {
+                            self.selection_text_style(graph_focused)
+                        } else {
+                            Style::default()
+                        }),
                 ));
                 pad_colored_lines(std::slice::from_mut(&mut local_line), width);
+                if self.selected_graph == 0 {
+                    self.style_graph_selection(&mut local_line, graph_focused);
+                }
                 lines.push(local_line);
             }
             if self.loading && self.rows.is_empty() && lines.is_empty() && height > 0 {
@@ -129,10 +131,10 @@ impl App {
                 {
                     sha.style = sha.style.fg(color);
                 }
-                if self.selected_graph == graph_index {
-                    line = line.style(self.selection_style(graph_focused));
-                }
                 pad_colored_lines(std::slice::from_mut(&mut line), width);
+                if self.selected_graph == graph_index {
+                    self.style_graph_selection(&mut line, graph_focused);
+                }
                 lines.push(line);
             }
             f.render_widget(
@@ -2058,8 +2060,6 @@ impl App {
         };
         let selected_bg = selection.bg.unwrap_or(Color::Reset);
         let glyph_style = selection.fg(color);
-        // The marker carries selection when the terminal disables colors.
-        let width = width.saturating_sub(2);
         // Leave the stat blank until the async totals arrive, rather than
         // showing a misleading "+0 -0".
         let stat = self.diff_stats.get(&(entry.path.clone(), staged)).copied();
@@ -2070,13 +2070,23 @@ impl App {
         let glyph_width = Line::from(glyph.to_string()).width();
         let (icon, icon_color) = self.file_icon(&entry.path.display());
         let icon_width = Line::from(icon.to_string()).width();
-        // Below this the row keeps the marker and +/- totals only; the path and
-        // file icon need more room than the pane has.
+        // In very narrow panes, keep the +/- totals visible.
         if width < glyph_width + 1 + icon_width + 1 + stats_width + 1 {
-            return Line::from(vec![
-                Span::styled(if selected { "▸ " } else { "  " }, selection),
-                Span::styled(truncate_start(&stat_text, width), selection),
-            ]);
+            let mut spans = Vec::new();
+            if let Some((added, removed)) = stat {
+                let removed = truncate_start(&format!("-{removed}"), width);
+                let available = width.saturating_sub(Line::from(removed.as_str()).width());
+                let added = truncate_start(&format!("+{added} "), available);
+                let padding = available.saturating_sub(Line::from(added.as_str()).width());
+                spans.push(Span::raw(" ".repeat(padding)));
+                spans.push(Span::styled(added, Style::default().fg(Color::Green)));
+                spans.push(Span::styled(removed, Style::default().fg(Color::Red)));
+            }
+            return Line::from(spans).style(selection.patch(if selected && self.no_color {
+                self.selection_text_style(active)
+            } else {
+                Style::default()
+            }));
         }
         let (staged_hunks, unstaged_hunks) = self
             .diff_hunk_counts
@@ -2109,7 +2119,11 @@ impl App {
         let suffix_width = stats_width + recap_width + recap_spacing;
         let path_width = width.saturating_sub(glyph_width + 1 + icon_width + 1 + suffix_width + 1);
         let display_path = truncate_start(&entry.path.display(), path_width);
-        let path_style = selection;
+        let path_style = selection.patch(if selected {
+            self.selection_text_style(active)
+        } else {
+            Style::default()
+        });
         let path_display_width = Line::from(display_path.as_str()).width();
         let available_padding = width
             .saturating_sub(glyph_width + 1 + icon_width + 1 + path_display_width + suffix_width);
@@ -2125,17 +2139,13 @@ impl App {
             });
         let icon_style = selection.fg(icon_color);
         let mut spans = vec![
-            Span::styled(
-                if selected { "▸ " } else { "  " },
-                selection.fg(Color::LightCyan),
-            ),
             Span::styled(format!("{glyph} "), glyph_style),
             Span::styled(format!("{icon} "), icon_style),
             Span::styled(
                 directory.to_string(),
                 path_style
                     .fg(Color::DarkGray)
-                    .remove_modifier(Modifier::BOLD),
+                    .remove_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             ),
             Span::styled(basename.to_string(), path_style),
             Span::styled(
@@ -2179,7 +2189,7 @@ impl App {
                 }),
             ));
         }
-        Line::from(spans)
+        Line::from(spans).style(selection)
     }
 
     fn panel_block(&self, title: &str, focused: bool) -> Block<'static> {
@@ -2297,7 +2307,13 @@ impl App {
             match self.bg {
                 // Rounded caps use the same color as the pill fill.
                 Some(bg) => {
-                    let text_style = Style::default().fg(bg).bg(color);
+                    let text_style = Style::default()
+                        .fg(if self.light_theme() {
+                            Color::Rgb(35, 42, 52)
+                        } else {
+                            bg
+                        })
+                        .bg(color);
                     let cap_style = Style::default().fg(color).bg(bg);
                     line.push_span(Span::styled(PILL_LEFT.to_string(), cap_style));
                     line.push_span(Span::styled(format!(" {text} "), text_style));
@@ -2321,7 +2337,19 @@ impl App {
         let right = sha_w;
         let summary_max = width.saturating_sub(used).saturating_sub(right + 1);
         let summary = truncate(&commit.summary, summary_max);
-        let mut summary_line = Line::from(Span::styled(summary.clone(), Style::default()));
+        let selected = self
+            .selected_graph
+            .checked_sub(usize::from(!self.local_status.is_empty()))
+            .and_then(|index| self.rows.get(index))
+            .is_some_and(|selected| selected.commit_index == row.commit_index);
+        let mut summary_line = Line::from(Span::styled(
+            summary.clone(),
+            if selected {
+                self.selection_text_style(self.focus == Focus::Graph)
+            } else {
+                Style::default()
+            },
+        ));
         if let Some(query) = self.selected_search_query() {
             highlight_search_matches(std::slice::from_mut(&mut summary_line), query);
         }
