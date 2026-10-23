@@ -1,6 +1,6 @@
 [package]
 name = "figit"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2021"
 description = "A terminal Git client built around a real commit graph"
 license = "MIT"
