@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-alpha.5 - 2026-10-26
+
+### Improved
+
+- Show up to three contextual shortcuts in the focused panel's bottom border, with no additional content rows.
+- Toggle panel shortcuts with Shift+H for the current session; hints start visible on each launch.
+- Adapt shortcuts to staging, diff selection modes, historical commits, and conflicts, omitting unavailable actions and j/k navigation hints.
+- Fit whole shortcut items to narrow panels while preserving right-aligned diff scope and mode labels.
+- Simplify the global shortcut bar and document the panel-hint toggle in help.
+
 ## 0.1.0-alpha.4 - 2026-10-23
 
 ### Fixed
