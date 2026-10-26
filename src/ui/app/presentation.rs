@@ -213,89 +213,150 @@ impl App {
         ])
     }
 
-    pub(super) fn context_hints(&self, width: usize) -> Line<'static> {
-        let mut actions = match self.focus {
-            Focus::Graph => vec![
-                ("Enter", "checkout"),
-                ("/", "search"),
-                (
-                    "p",
-                    if self.selected_current_branch() {
-                        "pull"
+    /// Contextual actions for the focused pane. Keep this free of repository
+    /// reads: rendering must only consult already loaded state.
+    pub(super) fn panel_actions(&self) -> Vec<(&'static str, &'static str)> {
+        if !self.panel_hints_visible || !self.modal_closed() || self.loading {
+            return Vec::new();
+        }
+        let mut actions = Vec::new();
+        let has_hunks = !self.hunk_header_indices.is_empty();
+        let has_changes = self
+            .diff_lines
+            .iter()
+            .any(|line| matches!(line.kind, DiffKind::Added | DiffKind::Removed));
+        let selected_file = self.status.get(self.selected_status).filter(|_| {
+            self.section_indices(self.status_section)
+                .contains(&self.selected_status)
+        });
+        let conflict =
+            self.three_way_view.is_some() || selected_file.is_some_and(StatusEntry::is_conflict);
+        match self.focus {
+            Focus::Graph => {
+                if self.pending_fixup && self.selected_commit_id().is_some() {
+                    actions.push(("Enter", "fixup"));
+                } else if self.remote_operation.is_none() {
+                    if self.selected_commit_id().is_some() {
+                        if self.selected_local_branch().is_some() {
+                            actions.push(("Enter", "checkout"));
+                        }
+                        actions.push(("/", "search"));
+                        actions.push((
+                            "p",
+                            if self.selected_current_branch() {
+                                "pull"
+                            } else {
+                                "pick commit"
+                            },
+                        ));
                     } else {
-                        "pick commit"
+                        if self.commit_actions_available() {
+                            actions.push(("c", "commit"));
+                        }
+                        actions.push(("/", "search"));
+                    }
+                }
+            }
+            Focus::Details => {}
+            Focus::Status if self.historical_commit.is_some() => {}
+            Focus::Status if conflict => {
+                if self.remote_operation.is_none() {
+                    actions.extend([
+                        ("o/t", "preview side"),
+                        ("b", "whole Base"),
+                        ("e", "editor"),
+                    ]);
+                }
+            }
+            Focus::Status if self.remote_operation.is_none() => {
+                if selected_file.is_some() {
+                    let staged = self.status_section == StatusSection::Staged;
+                    // Space applies the partial selection while hunk/line mode
+                    // is retained. F always applies whole files in this case.
+                    let key = if self.hunk_mode || self.line_mode {
+                        "F"
+                    } else {
+                        "Space"
+                    };
+                    actions.push((key, if staged { "unstage file" } else { "stage file" }));
+                    if staged && self.commit_actions_available() {
+                        actions.push(("c", "commit"));
+                    } else if !staged && !self.selected_statuses.is_empty() {
+                        actions.push(("x", "discard file"));
+                    }
+                    if has_hunks {
+                        actions.push(("h", "hunks"));
+                    }
+                }
+            }
+            Focus::Diff if !conflict && self.diff_path.is_some() && !self.details_loading => {
+                if self.remote_operation.is_none() {
+                    if self.diff_truncated.is_some() {
+                        actions.push(("L", "load full diff"));
+                    }
+                    if self.historical_commit.is_none()
+                        && selected_file.is_some()
+                        && ((!self.hunk_mode && !self.line_mode)
+                            || (self.hunk_mode && has_hunks)
+                            || (self.line_mode && self.selected_diff_line.is_some()))
+                    {
+                        let staged = self.diff_target == DiffTarget::Index;
+                        let scope = match (staged, self.hunk_mode, self.line_mode) {
+                            (true, _, true) => "unstage line",
+                            (false, _, true) => "stage line",
+                            (true, true, _) => "unstage hunk",
+                            (false, true, _) => "stage hunk",
+                            (true, _, _) => "unstage file",
+                            _ => "stage file",
+                        };
+                        actions.push(("Space", scope));
+                    }
+                }
+                if has_hunks {
+                    actions.push(("[/]", "hunk"));
+                }
+                if self.remote_operation.is_none() {
+                    if self.historical_commit.is_some() {
+                        if !self.line_mode {
+                            actions.push(("v", "view"));
+                        }
+                    } else if self.hunk_mode && has_changes {
+                        actions.push(("l", "lines"));
+                    } else if self.line_mode {
+                        actions.push(("f", "file mode"));
+                    } else if has_hunks {
+                        actions.push(("h", "hunks"));
+                    } else if !self.line_mode {
+                        actions.push(("v", "view"));
+                    }
+                }
+            }
+            _ => {}
+        }
+        actions.truncate(3);
+        actions
+    }
+
+    pub(super) fn context_hints(&self, width: usize) -> Line<'static> {
+        styled_key_hints_fitting(
+            &[
+                ("Tab", "focus"),
+                ("g", "graph"),
+                (
+                    "z",
+                    if self.maximized {
+                        "restore"
+                    } else {
+                        "maximize"
                     },
                 ),
+                ("H", "hints"),
+                ("?", "help"),
+                ("q", "quit"),
             ],
-            Focus::Details => vec![("j/k", "scroll message")],
-            Focus::Status | Focus::Diff
-                if self.three_way_view.is_some()
-                    || self
-                        .status
-                        .get(self.selected_status)
-                        .is_some_and(StatusEntry::is_conflict) =>
-            {
-                vec![
-                    ("o/t", "preview side"),
-                    ("b", "whole Base"),
-                    ("e", "editor"),
-                ]
-            }
-            Focus::Status | Focus::Diff if self.historical_commit.is_some() => {
-                vec![("[/]", "hunk"), ("v", "diff mode")]
-            }
-            Focus::Status | Focus::Diff => {
-                let staged = self.status_section == StatusSection::Staged;
-                let scope = match (staged, self.hunk_mode, self.line_mode) {
-                    (true, _, true) => "unstage line",
-                    (false, _, true) => "stage line",
-                    (true, true, _) => "unstage hunk",
-                    (false, true, _) => "stage hunk",
-                    (true, _, _) => "unstage file",
-                    _ => "stage file",
-                };
-                let mut items = vec![("Space", scope)];
-                if self.hunk_mode
-                    || (self.focus == Focus::Diff && !self.hunk_header_indices.is_empty())
-                {
-                    items.push(("[/]", "hunk"));
-                }
-                if staged && self.focus == Focus::Status {
-                    items.push(("c", "commit"));
-                } else if !staged {
-                    items.push(("x", "discard file"));
-                }
-                items.push(("h/l", "hunk/line"));
-                items
-            }
-            Focus::Commit => vec![("Enter", "confirm"), ("Esc", "cancel")],
-        };
-        // Essential navigation stays visible even in a narrow terminal.
-        let mut tail = vec![
-            ("Tab", "focus"),
-            ("g", "graph"),
-            (
-                "z",
-                if self.maximized {
-                    "restore"
-                } else {
-                    "maximize"
-                },
-            ),
-            ("?", "help"),
-        ];
-        if width >= 100 {
-            tail.push(("q", "quit"));
-        }
-        let tail_width = styled_key_hints(&tail, Color::LightCyan).width();
-        let available = width.saturating_sub(tail_width + 3);
-        while !actions.is_empty()
-            && styled_key_hints(&actions, Color::LightCyan).width() > available
-        {
-            actions.pop();
-        }
-        actions.extend(tail);
-        styled_key_hints_fitting(&actions, Color::LightCyan, width)
+            Color::LightCyan,
+            width,
+        )
     }
 
     /// Keep syntax colors and semantic accents readable against a light

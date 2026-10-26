@@ -913,7 +913,7 @@ fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
     let screen = tui.contents();
     assert!(
         screen.contains("Space stage hunk") && screen.contains("hunk selection"),
-        "staging and diff panels should show the shared mode hints:\n{screen}"
+        "the focused diff should show its mode and primary action:\n{screen}"
     );
     tui.send(b"[");
     tui.wait_for_text_background("context 18", selected);
@@ -1001,7 +1001,8 @@ fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
         );
     }
     tui.send(b"h");
-    tui.wait_for("[/] hunk");
+    // Secondary shortcuts can be omitted when metadata needs the border space.
+    tui.wait_for("hunk selection");
 
     tui.send(b"]");
     tui.wait_for("third ours");
@@ -1887,7 +1888,7 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
         repository.path(),
         &["rev-parse", "--git-path", "rebase-merge"],
     );
-    assert!(repository.path().join(state_path).exists());
+    assert!(repository.path().join(&state_path).exists());
 
     // The selected commit's patch is staged. Confirm a replacement commit.
     tui.send(b"c");
@@ -1949,7 +1950,14 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
     tui.wait_for("Staged (0)");
     tui.wait_for("Ctrl+C continue");
     tui.send(b"\x03");
-    tui.wait_until_hidden("rebase paused");
+    // The status can say "rebase active" rather than "rebase paused";
+    // waiting for that text to disappear can return before Git continues.
+    let rebase_state = repository.path().join(&state_path);
+    tui.wait_until(
+        Duration::from_secs(30),
+        |contents| format!("rebase did not finish; terminal contained:\n{contents}"),
+        |_, _| (!rebase_state.exists()).then_some(()),
+    );
     assert_eq!(
         git_ok(repository.path(), &["log", "--format=%s", "-4"]),
         "tip commit\nsplit remainder\nrenamed commit\nroot commit"
@@ -2681,6 +2689,63 @@ fn delete_popup_can_target_the_tag_and_leave_the_branch() {
         .success(),
         "the branch should be left untouched"
     );
+    tui.quit();
+}
+
+#[test]
+fn focused_panel_legends_toggle_and_follow_keyboard_focus() {
+    let repository = init_hunk_staging_repository();
+    let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);
+    tui.wait_for("Space stage file");
+    tui.wait_for("H hints");
+    let original_row = tui
+        .contents()
+        .lines()
+        .position(|line| line.contains("file.txt"))
+        .unwrap();
+    tui.send(b"H");
+    tui.wait_until_hidden("Space stage file");
+    assert!(tui.contents().contains("H hints"));
+    assert_eq!(
+        original_row,
+        tui.contents()
+            .lines()
+            .position(|line| line.contains("file.txt"))
+            .unwrap()
+    );
+    tui.send(b"H");
+    tui.wait_for("Space stage file");
+    tui.send(b"h");
+    tui.wait_for("Space stage hunk");
+    tui.wait_for_title_focus("Diff");
+    tui.wait_for("hunk selection");
+    tui.send(b"H");
+    tui.wait_until_hidden("Space stage hunk");
+    assert!(tui.contents().contains("hunk selection"));
+    tui.send(b"H");
+    tui.wait_for("Space stage hunk");
+    tui.send(b"f");
+    tui.wait_for("Space stage file");
+    tui.send(b"\x1b[Z");
+    tui.wait_for_title_focus("Graph");
+    tui.wait_until_hidden("Space stage file");
+    tui.wait_for("/ search");
+    // With no modal input, H remains available on every panel. In the
+    // search field it must be inserted as text rather than toggling legends.
+    tui.send(b"/");
+    tui.wait_for("Search /");
+    tui.send(b"H");
+    tui.wait_for("Search /H");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Search /");
+    tui.wait_for("/ search");
+    if let Ok(path) = std::env::var("FIGIT_PANEL_HINT_PREVIEW") {
+        tui.send(b"\x1b[Z");
+        tui.wait_for("Space stage file");
+        let parser = tui.screen.lock().expect("screen lock");
+        let svg = terminal_svg(&parser, 140, 40);
+        std::fs::write(path, svg).unwrap();
+    }
     tui.quit();
 }
 
