@@ -16,6 +16,66 @@ fn help_overlay_opens_and_closes() {
 }
 
 #[test]
+fn search_arrows_skip_unmatched_commits_and_wrap_until_search_is_closed() {
+    let mut graph = synthetic_graph();
+    graph.commits[0].summary = "matching tip".into();
+    graph.commits[3].summary = "matching root".into();
+    let mut app = App::new(graph, Vec::new(), None);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    for character in "matching".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(character)));
+    }
+    assert!(app
+        .status_line()
+        .to_string()
+        .starts_with("Search: matching"));
+    assert!(!app.status_line().to_string().contains("Search /"));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.selected_commit_id().as_deref(), Some("m"));
+    assert!(app.status_line().to_string().contains("↑/↓ result"));
+    for (key, expected) in [
+        (KeyCode::Down, "b"),
+        (KeyCode::Down, "m"),
+        (KeyCode::Up, "b"),
+        (KeyCode::Up, "m"),
+    ] {
+        app.handle_key(KeyEvent::from(key));
+        assert_eq!(app.selected_commit_id().as_deref(), Some(expected));
+        assert!(app.search_popup.is_some());
+    }
+    // Re-selecting a result with Enter must not leave search mode.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.selected_commit_id().as_deref(), Some("b"));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.selected_commit_id().as_deref(), Some("r"));
+}
+
+#[test]
+fn empty_search_results_do_not_fall_through_to_commit_navigation() {
+    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+    app.open_search_popup();
+    for character in "no/such/commit".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(character)));
+    }
+    assert!(app
+        .status_line()
+        .to_string()
+        .starts_with("Search: no/such/commit"));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.status_line().to_string().contains("0 matches"));
+    let selected = app.selected_commit_id();
+    for key in [KeyCode::Down, KeyCode::Up] {
+        app.handle_key(KeyEvent::from(key));
+        assert_eq!(app.selected_commit_id(), selected);
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert!(!app.search_popup.as_ref().unwrap().searched);
+    assert!(app.search_popup.as_ref().unwrap().query.is_empty());
+}
+
+#[test]
 fn update_notifications_offer_install_and_restart() {
     let mut app = App::new(synthetic_graph(), Vec::new(), None);
     app.update_tx
@@ -243,18 +303,27 @@ fn panel_hints_describe_available_file_and_diff_actions() {
         .panel_actions()
         .iter()
         .any(|(_, description)| *description == "checkout"));
-    assert!(app.panel_actions().contains(&("c", "commit")));
+    assert_eq!(app.panel_actions(), vec![("F", "fetch"), ("/", "search")]);
     app.selected_graph = 1; // main
     assert_eq!(
         app.panel_actions(),
-        vec![("Enter", "checkout"), ("/", "search"), ("p", "pull")]
+        vec![
+            ("F", "fetch"),
+            ("p", "pull"),
+            ("Enter", "checkout"),
+            ("/", "search")
+        ]
     );
     app.selected_graph = 2; // commit without a branch
+    assert!(app.panel_actions().contains(&("c", "checkout")));
     assert!(!app
         .panel_actions()
         .iter()
-        .any(|(_, description)| *description == "checkout"));
-    assert!(app.panel_actions().contains(&("p", "pick commit")));
+        .any(|(_, description)| description.contains("pick")));
+    assert!(!app
+        .panel_actions()
+        .iter()
+        .any(|(_, description)| *description == "pull"));
 }
 
 #[test]
@@ -391,6 +460,301 @@ fn panel_hints_keys_remain_distinct_across_terminal_themes() {
             assert_ne!(key.fg, description.fg);
         }
     }
+}
+
+fn open_filtered_commands(app: &mut App, query: &str) {
+    render_full_app(app, 120, 40);
+    app.handle_key(KeyEvent::from(KeyCode::Char(':')));
+    assert!(
+        app.command_picker.is_some(),
+        "picker should open: {:?}",
+        app.action_error
+    );
+    for character in query.chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(character)));
+    }
+}
+
+#[test]
+fn command_picker_is_scoped_to_the_panel_and_selection() {
+    use CommandId::*;
+    let mut app = shortcut_test_app();
+    let ids = |app: &App| {
+        app.panel_commands()
+            .into_iter()
+            .map(|command| command.id)
+            .collect::<Vec<_>>()
+    };
+    assert!(ids(&app).contains(&ApplySelection));
+    assert!(ids(&app).contains(&Discard));
+    assert!(!ids(&app).contains(&Fetch));
+    assert!(!ids(&app).contains(&Graph(GraphAction::CherryPick)));
+    app.status_section = StatusSection::Staged;
+    app.ensure_status_selection();
+    assert!(!ids(&app).contains(&Discard));
+    assert!(ids(&app).contains(&Commit));
+    app.hunk_mode = true;
+    let entries = app.panel_commands();
+    assert_eq!(
+        entries.iter().find(|entry| entry.id == Fixup).unwrap().key,
+        ""
+    );
+    app.hunk_mode = false;
+    app.focus = Focus::Diff;
+    assert!(!ids(&app).contains(&Commit));
+    assert!(!ids(&app).contains(&Stash));
+    app.diff_path = Some("index.txt".into());
+    app.set_diff_lines(parse_diff("@@ -1 +1 @@\n-old\n+new\n"));
+    assert!(ids(&app).contains(&HunkMode));
+    assert!(ids(&app).contains(&DiffMode));
+    app.historical_commit = Some("m".into());
+    assert!(!ids(&app).contains(&ApplySelection));
+    assert!(!ids(&app).contains(&Discard));
+    assert!(!ids(&app).contains(&Commit));
+    assert!(ids(&app).contains(&PreviousHunk));
+    app.focus = Focus::Status;
+    assert_eq!(ids(&app), vec![Maximize]);
+    app.focus = Focus::Details;
+    assert_eq!(ids(&app), vec![Maximize]);
+    app.focus = Focus::Graph;
+    app.selected_graph = 1;
+    assert!(ids(&app).contains(&Fetch));
+    assert!(ids(&app).contains(&Graph(GraphAction::Pull)));
+    assert!(!ids(&app).contains(&Graph(GraphAction::CherryPick)));
+    app.selected_graph = 2;
+    assert!(!ids(&app).contains(&Graph(GraphAction::Pull)));
+    assert!(ids(&app).contains(&Graph(GraphAction::CherryPick)));
+    app.remote_operation = Some(RemoteOperation::Fetch("origin".into()));
+    assert!(ids(&app).is_empty());
+}
+
+#[test]
+fn command_picker_is_modal_and_printable_keys_edit_the_query() {
+    let mut app = shortcut_test_app();
+    app.panel_hints_visible = false;
+    open_filtered_commands(&mut app, "");
+    assert!(app.status_line().to_string().contains("↑/↓ select"));
+    let initial_focus = app.focus;
+    let selection = app.selected_status;
+    let count = app.command_picker.as_ref().unwrap().commands.len();
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.command_picker.as_ref().unwrap().selected, count - 1);
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.command_picker.as_ref().unwrap().selected, 0);
+    for character in "qHj/k:".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(character)));
+    }
+    assert_eq!(app.command_picker.as_ref().unwrap().query, "qHj/k:");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(
+        app.command_picker.is_some(),
+        "Enter with no matches must not run anything"
+    );
+    assert!(render_full_app(&mut app, 120, 40).contains("No matching commands"));
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert!(app.command_picker.as_ref().unwrap().query.is_empty());
+    assert!(!app.panel_hints_visible);
+    app.handle_event(Event::Mouse(event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: app.graph_area.x + 2,
+        row: app.graph_area.y + 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.command_picker.is_none());
+    assert_eq!((app.focus, app.selected_status), (initial_focus, selection));
+    app.commit_popup = true;
+    app.commit_field = CommitField::Title;
+    app.handle_key(KeyEvent::from(KeyCode::Char(':')));
+    assert!(app.command_picker.is_none());
+    assert_eq!(app.commit_title, ":");
+}
+
+#[test]
+fn command_picker_uses_existing_staging_and_confirmation_workflows() {
+    let (directory, mut app) = review_app("content");
+    let (_other_directory, mut shortcut_app) = review_app("content");
+    open_filtered_commands(&mut app, "stgsel");
+    let picker = app.command_picker.as_ref().unwrap();
+    let indices = commands::filtered_commands(&picker.commands, &picker.query);
+    assert_eq!(picker.commands[indices[0]].id, CommandId::ApplySelection);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    shortcut_app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+    assert_eq!(app.local_status, shortcut_app.local_status);
+    assert_eq!(app.status_section, shortcut_app.status_section);
+    assert_eq!(app.focus, shortcut_app.focus);
+    assert!(app.command_picker.is_none());
+    assert!(!review_git(directory.path(), &["diff", "--cached"]).is_empty());
+
+    // A destructive command opens its existing confirmation; Enter in the
+    // picker itself never confirms a reset or changes the commit history.
+    let head = review_git(directory.path(), &["rev-parse", "HEAD"]);
+    app.focus = Focus::Graph;
+    app.selected_graph = 1;
+    open_filtered_commands(&mut app, "reset");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.graph_action, Some(GraphAction::Reset));
+    assert_eq!(review_git(directory.path(), &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn command_picker_rejects_stale_targets_and_defers_background_refreshes() {
+    let mut app = shortcut_test_app();
+    open_filtered_commands(&mut app, "stage");
+    app.selected_status = 1;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.command_picker.is_none());
+    assert!(app
+        .action_error
+        .as_deref()
+        .unwrap()
+        .contains("Selection changed"));
+
+    app = shortcut_test_app();
+    app.focus = Focus::Graph;
+    app.selected_graph = 1;
+    open_filtered_commands(&mut app, "reset");
+    app.graph.head_name = Some("different-branch".into());
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.command_picker.is_none());
+    assert!(app.graph_action.is_none());
+    assert!(app
+        .action_error
+        .as_deref()
+        .unwrap()
+        .contains("Selection changed"));
+
+    let (_directory, mut app) = review_app("content");
+    open_filtered_commands(&mut app, "");
+    app.refresh_deadline = Some(Instant::now());
+    app.poll_repository_refresh();
+    assert!(!app.refresh_in_progress);
+    assert!(app.refresh_deadline.is_some());
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    app.poll_repository_refresh();
+    assert!(app.refresh_in_progress);
+}
+
+#[test]
+fn command_picker_conflict_actions_keep_preview_and_confirmation_separate() {
+    let (directory, mut app) = review_app("modify-delete");
+    let original = std::fs::read(directory.path().join("file.txt")).unwrap();
+    let ids = app
+        .panel_commands()
+        .iter()
+        .map(|command| command.id)
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&CommandId::Conflict(ConflictSide::Theirs)));
+    assert!(!ids.contains(&CommandId::ApplySelection));
+    assert!(!ids.contains(&CommandId::PreviousHunk));
+    open_filtered_commands(&mut app, "previewtheirs");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.three_way_view.as_ref().unwrap().result_preview);
+    assert_eq!(
+        std::fs::read(directory.path().join("file.txt")).unwrap(),
+        original
+    );
+    open_filtered_commands(&mut app, "confirmconflict");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(!directory.path().join("file.txt").exists());
+    assert!(review_git(directory.path(), &["ls-files", "-u"]).is_empty());
+}
+
+#[test]
+fn command_picker_tracks_panel_edges_and_handles_small_terminals() {
+    for focus in [Focus::Graph, Focus::Status, Focus::Diff, Focus::Details] {
+        for (width, height) in [(120, 40), (60, 18), (24, 8)] {
+            let mut app = shortcut_test_app();
+            app.focus = focus;
+            app.graph_visible = focus == Focus::Graph;
+            if focus == Focus::Details {
+                app.historical_commit = Some("m".into());
+            }
+            render_full_app(&mut app, width, height);
+            let source = match focus {
+                Focus::Graph => app.graph_area,
+                Focus::Status => app.staging_panes(app.staging_area)[0],
+                Focus::Details => app.details_area,
+                _ => app.diff_area,
+            };
+            if let Some(area) = app.command_picker_area(app.panel_commands().len()) {
+                assert_eq!(area.bottom(), source.bottom() - 1);
+                assert_eq!(area.x, source.x + 1);
+                assert_eq!(area.width, source.width - 2);
+                assert!(area.y >= 1);
+                app.handle_key(KeyEvent::from(KeyCode::Char(':')));
+                assert!(app.command_picker.is_some());
+                render_full_app(&mut app, width, height);
+                app.handle_key(KeyEvent::from(KeyCode::Esc));
+            }
+        }
+    }
+    let mut app = shortcut_test_app();
+    render_full_app(&mut app, 8, 4);
+    app.handle_key(KeyEvent::from(KeyCode::Char(':')));
+    assert!(app.command_picker.is_none());
+    assert!(app.action_error.as_deref().unwrap().contains("too small"));
+}
+
+#[test]
+fn command_picker_scrolls_and_remains_readable_across_terminal_themes() {
+    for (background, no_color) in [
+        (Color::Rgb(30, 30, 46), false),
+        (Color::Rgb(255, 255, 255), false),
+        (Color::Reset, true),
+    ] {
+        let mut app = shortcut_test_app();
+        app.focus = Focus::Graph;
+        app.selected_graph = 1;
+        app.bg = Some(background);
+        app.no_color = no_color;
+        open_filtered_commands(&mut app, "");
+        app.handle_key(KeyEvent::from(KeyCode::Up));
+        let screen = render_full_app(&mut app, 120, 40);
+        assert!(
+            screen.contains("Maximize panel"),
+            "last command should scroll into view"
+        );
+        let count = app.command_picker.as_ref().unwrap().commands.len();
+        assert!(screen.contains(&format!("{count}/{count}")));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let area = app.command_picker_area(count).unwrap();
+        let selected = &terminal.backend().buffer()[(area.x + 1, area.bottom() - 3)];
+        assert_eq!(selected.symbol(), "M");
+        assert!(selected.modifier.contains(Modifier::BOLD));
+        if no_color {
+            assert_eq!(selected.fg, Color::Reset);
+            assert!(selected.modifier.contains(Modifier::UNDERLINED));
+        }
+        // Resizing cannot strand a hidden modal with no way to identify it.
+        render_full_app(&mut app, 8, 4);
+        assert!(app.status_line().to_string().contains("Esc close"));
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.command_picker.is_none());
+    }
+}
+
+#[test]
+fn command_picker_filtering_is_fuzzy_case_insensitive_and_stable() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Graph;
+    app.selected_graph = 1;
+    let entries = app.panel_commands();
+    let labels = |query: &str| {
+        commands::filtered_commands(&entries, query)
+            .into_iter()
+            .map(|i| entries[i].label)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(labels("")[0], "Fetch");
+    assert_eq!(labels("FeTcH")[0], "Fetch");
+    assert_eq!(labels("chktbr")[0], "Checkout branch");
+    assert_eq!(labels("download")[0], "Fetch");
+    assert!(labels("no-such-command").is_empty());
+    let first = labels("co");
+    assert_eq!(first, labels("co"));
+    assert!(first.iter().any(|label| label.contains("Checkout")));
 }
 
 #[test]
@@ -1567,52 +1931,6 @@ Diff: ours → theirs\n@@ -1 +1 @@\n-ours\n+theirs\n";
 }
 
 #[test]
-fn conflict_result_preview_is_a_base_relative_diff() {
-    let diff = conflict_result_diff(
-        "base line\nunchanged\n",
-        "chosen line\nunchanged\n",
-        "Result",
-    );
-    assert_eq!(diff[0].kind, DiffKind::Meta);
-    assert_eq!(diff[0].text, "Base → Result");
-    assert!(diff
-        .iter()
-        .any(|line| { line.kind == DiffKind::Removed && line.text == "-base line" }));
-    assert!(diff
-        .iter()
-        .any(|line| { line.kind == DiffKind::Added && line.text == "+chosen line" }));
-    assert!(diff
-        .iter()
-        .any(|line| { line.kind == DiffKind::Context && line.text == " unchanged" }));
-}
-
-#[test]
-fn conflict_side_diffs_recolor_standard_diff_changes_with_the_side_color() {
-    let diff = conflict_result_diff("base\n", "ours\n", "Ours");
-    let rendered = render_conflict_side_diff(
-        &diff,
-        "file.txt",
-        3,
-        40,
-        DiffMode::Unified,
-        Color::LightBlue,
-        &[None; 16],
-    );
-    let removed = rendered
-        .iter()
-        .find(|line| line.to_string().contains("-base"))
-        .unwrap();
-    let added = rendered
-        .iter()
-        .find(|line| line.to_string().contains("+ours"))
-        .unwrap();
-    assert_eq!(removed.spans[1].style.fg, Some(Color::LightRed));
-    assert_eq!(removed.spans[1].style.bg, Some(Color::Rgb(70, 44, 49)));
-    assert_eq!(added.spans[1].style.fg, Some(Color::LightBlue));
-    assert_eq!(added.spans[1].style.bg, Some(Color::Blue));
-}
-
-#[test]
 fn selected_conflict_diff_uses_blue_and_yellow_commit_colors() {
     let mut app = App::new(
         synthetic_graph(),
@@ -1665,6 +1983,256 @@ fn render_full_app(app: &mut App, width: u16, height: u16) -> String {
         .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn large_resolver_app(count: usize) -> App {
+    let mut base = String::new();
+    let mut ours = String::new();
+    let mut theirs = String::new();
+    let mut working = String::new();
+    for index in 0..count {
+        let line = format!("let value_{index} = compute({index}, \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\");\n");
+        base.push_str(&line);
+        if index == count / 4 || index == count * 3 / 4 {
+            let our_line = format!("ours at {index}\n");
+            let their_line = format!("theirs at {index}\n");
+            ours.push_str(&our_line);
+            theirs.push_str(&their_line);
+            working.push_str(&format!(
+                "<<<<<<< HEAD\n{our_line}=======\n{their_line}>>>>>>> incoming\n"
+            ));
+        } else {
+            ours.push_str(&line);
+            theirs.push_str(&line);
+            working.push_str(&line);
+        }
+    }
+    let mut app = App::new(
+        GraphModel::default(),
+        vec![StatusEntry {
+            path: "large.rs".into(),
+            index: 'U',
+            worktree: 'U',
+        }],
+        None,
+    );
+    app.three_way_view = Some(ThreeWayView::new(
+        "large.rs".into(),
+        crate::backend::ConflictVersions {
+            base: Some(base.into_bytes()),
+            ours: Some(ours.into_bytes()),
+            theirs: Some(theirs.into_bytes()),
+            working: Some(working.into_bytes()),
+        },
+    ));
+    app.focus = Focus::Diff;
+    app.graph_visible = false;
+    app
+}
+
+#[test]
+fn resolver_hunk_navigation_jumps_to_visible_conflicts_and_highlights_them() {
+    let mut app = large_resolver_app(1_000);
+    render_full_app(&mut app, 120, 40);
+    assert!(app.move_conflict_hunk(1));
+    let screen = render_full_app(&mut app, 120, 40);
+    assert!(screen.contains("Hunk 2/2"));
+    assert!(screen.contains("ours at 750"), "{screen}");
+    assert!(screen.contains("theirs at 750"), "{screen}");
+    let view = app.three_way_view.as_ref().unwrap();
+    assert!(view.scroll_y > 700);
+    assert!(view.active_range().contains(&(view.scroll_y + 2)));
+    app.move_conflict_hunk(1);
+    let screen = render_full_app(&mut app, 120, 40);
+    assert!(screen.contains("ours at 250"));
+    assert!(screen.contains("Hunk 1/2"));
+}
+
+#[test]
+fn resolver_scrolling_preserves_wheel_delta_and_uses_one_viewport_bound() {
+    let mut app = large_resolver_app(200);
+    render_full_app(&mut app, 80, 24);
+    app.three_way_view.as_mut().unwrap().scroll_y = 0;
+    let (x, y) = (app.diff_area.x + 1, app.diff_area.y + 2);
+    app.handle_mouse_scroll(x, y, 8);
+    assert_eq!(app.three_way_view.as_ref().unwrap().scroll_y, 8);
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.three_way_view.as_ref().unwrap().scroll_y, 9);
+    let page = app
+        .three_way_view
+        .as_ref()
+        .unwrap()
+        .viewport_height
+        .saturating_sub(1);
+    app.page_focus(1);
+    assert_eq!(app.three_way_view.as_ref().unwrap().scroll_y, 9 + page);
+    let view = app.three_way_view.as_mut().unwrap();
+    view.scroll_y = usize::MAX;
+    view.clamp_scroll();
+    let end = view.rows.len() - view.viewport_height;
+    assert_eq!(view.scroll_y, end);
+    app.handle_mouse_scroll(x, y, 8);
+    app.page_focus(1);
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.three_way_view.as_ref().unwrap().scroll_y, end);
+}
+
+#[test]
+fn resolver_preview_pans_all_three_columns_and_keeps_fixed_line_numbers() {
+    let mut app = large_resolver_app(100);
+    let view = app.three_way_view.as_mut().unwrap();
+    let candidate = replace_conflict_hunk(
+        &String::from_utf8_lossy(&view.working),
+        0,
+        ConflictSide::Theirs,
+    )
+    .unwrap();
+    view.preview(
+        ConflictResolution::Content(candidate.into_bytes()),
+        ConflictSide::Theirs,
+    );
+    view.scroll_y = 0;
+    let before = render_full_app(&mut app, 120, 40);
+    app.handle_key(KeyEvent::from(KeyCode::Right));
+    assert_eq!(app.three_way_view.as_ref().unwrap().scroll_x, 4);
+    let after = render_full_app(&mut app, 120, 40);
+    let result_start = before
+        .lines()
+        .position(|line| line.contains("Result — Preview"))
+        .unwrap();
+    assert_ne!(
+        before.lines().take(result_start).collect::<Vec<_>>(),
+        after.lines().take(result_start).collect::<Vec<_>>()
+    );
+    assert_ne!(
+        before.lines().skip(result_start).collect::<Vec<_>>(),
+        after.lines().skip(result_start).collect::<Vec<_>>()
+    );
+    assert!(before.contains("  1 "));
+    assert!(after.contains("  1 "));
+}
+
+#[test]
+fn resolver_render_cache_is_bounded_by_visible_rows_and_survives_unchanged_refreshes() {
+    let mut app = large_resolver_app(10_000);
+    render_full_app(&mut app, 120, 40);
+    let cached = app
+        .three_way_view
+        .as_ref()
+        .unwrap()
+        .line_cache
+        .borrow()
+        .len();
+    assert!(
+        cached > 0 && cached < 100,
+        "only visible cells should be highlighted, got {cached}"
+    );
+    render_full_app(&mut app, 120, 40);
+    assert_eq!(
+        app.three_way_view
+            .as_ref()
+            .unwrap()
+            .line_cache
+            .borrow()
+            .len(),
+        cached
+    );
+    for _ in 0..20 {
+        app.three_way_view.as_mut().unwrap().scroll_by(8);
+        render_full_app(&mut app, 120, 40);
+        assert!(
+            app.three_way_view
+                .as_ref()
+                .unwrap()
+                .line_cache
+                .borrow()
+                .len()
+                <= 512
+        );
+    }
+    let (_directory, mut app) = review_app("conflict");
+    render_full_app(&mut app, 120, 40);
+    let baseline = app.three_way_view.as_ref().unwrap().rows.clone();
+    let cached = app
+        .three_way_view
+        .as_ref()
+        .unwrap()
+        .line_cache
+        .borrow()
+        .len();
+    app.refresh_diff();
+    assert!(std::sync::Arc::ptr_eq(
+        &baseline,
+        &app.three_way_view.as_ref().unwrap().rows
+    ));
+    assert_eq!(
+        app.three_way_view
+            .as_ref()
+            .unwrap()
+            .line_cache
+            .borrow()
+            .len(),
+        cached
+    );
+}
+
+#[test]
+fn resolver_commands_remain_local_when_a_historical_commit_is_selected() {
+    let (_directory, mut app) = review_app("conflict");
+    app.select_graph_index(1);
+    assert!(app.historical_commit.is_some());
+    app.focus = Focus::Diff;
+    assert!(app
+        .panel_commands()
+        .iter()
+        .any(|entry| entry.id == CommandId::Conflict(ConflictSide::Theirs)));
+    open_filtered_commands(&mut app, "previewtheirs");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.three_way_view.as_ref().unwrap().result_preview);
+    assert!(app
+        .panel_commands()
+        .iter()
+        .any(|entry| entry.id == CommandId::ConfirmConflict));
+}
+
+#[test]
+fn resolver_compact_layout_keeps_controls_and_more_result_context_visible() {
+    let mut app = large_resolver_app(100);
+    app.graph_visible = true;
+    let screen = render_full_app(&mut app, 80, 24);
+    assert!(app.staging_area.height <= 6);
+    assert!(app.three_way_view.as_ref().unwrap().viewport_height >= 5);
+    assert!(screen.contains("restore whole file"));
+    app.graph_visible = false;
+    render_full_app(&mut app, 80, 24);
+    assert_eq!(app.staging_area.height, 3);
+    assert!(app.three_way_view.as_ref().unwrap().viewport_height >= 6);
+    app.maximized = true;
+    render_full_app(&mut app, 80, 24);
+    assert!(app.three_way_view.as_ref().unwrap().viewport_height >= 8);
+}
+
+#[test]
+fn conflict_preview_uses_one_aligned_grid_and_preserves_working_contents() {
+    let versions = crate::backend::ConflictVersions {
+        base: Some(b"base\n".to_vec()),
+        ours: Some(b"ours\n".to_vec()),
+        theirs: Some(b"theirs\n".to_vec()),
+        working: Some(b"<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n".to_vec()),
+    };
+    let mut view = ThreeWayView::new("file.txt".into(), versions);
+    let original = view.working.clone();
+    view.preview(
+        ConflictResolution::Content(b"theirs\n".to_vec()),
+        ConflictSide::Theirs,
+    );
+    assert_eq!(view.working, original);
+    assert_eq!(view.rows[0].ours.as_ref().unwrap().text, "ours");
+    assert_eq!(view.rows[0].theirs.as_ref().unwrap().text, "theirs");
+    assert_eq!(view.rows[0].result.as_ref().unwrap().text, "theirs");
+    assert_eq!(view.rows[0].result.as_ref().unwrap().number, 1);
+    view.cancel_preview();
+    assert!(std::sync::Arc::ptr_eq(&view.rows, &view.working_rows));
 }
 
 #[test]
@@ -1931,9 +2499,14 @@ fn three_way_columns_fit_their_terminal_cell_width() {
         number: 1234,
         text: "漢字 and more text".into(),
     };
-    let line = three_way_column(Some(&cell), None, "file.txt", 12, 0, Color::LightBlue);
+    let line = three_way_column(Some(&cell), None, "file.txt", 12, 0, Color::LightBlue, 4);
     assert_eq!(line.width(), 12);
     assert_eq!(Line::from(fit_to_cells("漢字 and more text", 5)).width(), 5);
+    let panned = three_way_column(Some(&cell), None, "file.txt", 12, 1, Color::LightBlue, 5);
+    assert!(
+        panned.to_string().starts_with("1234  字"),
+        "wide glyphs must preserve partial-column padding: {panned:?}"
+    );
 }
 
 #[test]
@@ -1942,7 +2515,15 @@ fn three_way_source_columns_use_syntax_colors() {
         number: 1,
         text: "fn main() { let count = 3; }".into(),
     };
-    let line = three_way_column(Some(&cell), None, "src/main.rs", 80, 0, Color::LightMagenta);
+    let line = three_way_column(
+        Some(&cell),
+        None,
+        "src/main.rs",
+        80,
+        0,
+        Color::LightMagenta,
+        4,
+    );
     let syntax_colors = line
         .spans
         .iter()
@@ -2273,42 +2854,54 @@ fn bench_secondary_paths() {
     }
 
     for n in [2_000usize, 10_000] {
-        let side = |prefix: &str| {
-            (0..n)
-                .map(|i| DiffLine {
-                    old_no: Some(i as u32 + 1),
-                    new_no: Some(i as u32 + 1),
-                    text: format!("{prefix} line {i}"),
-                    kind: DiffKind::Context,
-                })
-                .collect::<Vec<_>>()
-        };
-        let working = format!(
-            "<<<<<<<\n{}\n=======\n{}\n>>>>>>>\n",
-            "ours\n".repeat(5),
-            "theirs\n".repeat(5)
+        let source = (0..n)
+            .map(|i| format!("let value_{i} = compute({i}, \"text\"); // comment\n"))
+            .collect::<String>();
+        let mut working = source.clone();
+        let middle = format!(
+            "let value_{} = compute({}, \"text\"); // comment\n",
+            n / 2,
+            n / 2
         );
-        let view = ThreeWayView {
-            path: GitPath::from("conflict.txt"),
-            rows: Vec::new(),
-            ours_diff: side("ours"),
-            theirs_diff: side("theirs"),
-            result_diff: Vec::new(),
-            working: working.into_bytes(),
-            pending_resolution: None,
-            result_preview: false,
-            chosen_side: None,
-            hunk_index: 0,
-            ours_missing: false,
-            theirs_missing: false,
-            result_missing: false,
-            scroll_y: 0,
-            scroll_x: 0,
+        working = working.replace(
+            &middle,
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n",
+        );
+        let versions = crate::backend::ConflictVersions {
+            base: Some(source.as_bytes().to_vec()),
+            ours: Some(source.as_bytes().to_vec()),
+            theirs: Some(source.into_bytes()),
+            working: Some(working.into_bytes()),
         };
+        let view = ThreeWayView::new("conflict.rs".into(), versions);
         let mut app = App::new(GraphModel::default(), Vec::new(), None);
         app.three_way_view = Some(view);
+        app.focus = Focus::Diff;
         let ms = bench_frame(&mut app, FRAMES);
         println!("BENCH three_way_lines={n} frame={ms:.3}ms");
+        let text = String::from_utf8_lossy(&app.three_way_view.as_ref().unwrap().working);
+        let candidate = replace_conflict_hunk(&text, 0, ConflictSide::Theirs).unwrap();
+        app.three_way_view.as_mut().unwrap().preview(
+            ConflictResolution::Content(candidate.into_bytes()),
+            ConflictSide::Theirs,
+        );
+        let preview_ms = bench_frame(&mut app, FRAMES);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let cold_start = Instant::now();
+        for _ in 0..FRAMES {
+            app.three_way_view
+                .as_ref()
+                .unwrap()
+                .line_cache
+                .borrow_mut()
+                .clear();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        let cold_ms = cold_start.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64;
+        println!(
+            "BENCH three_way_lines={n} preview={preview_ms:.3}ms cold_visible_frame={cold_ms:.3}ms"
+        );
     }
 }
 

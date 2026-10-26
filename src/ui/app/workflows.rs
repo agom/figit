@@ -1610,7 +1610,11 @@ impl App {
                     self.reload_external_snapshot(snapshot);
                     if choose_initial_focus {
                         self.focus = if initial_status_has_changes {
-                            Focus::Status
+                            if self.three_way_view.is_some() {
+                                Focus::Diff
+                            } else {
+                                Focus::Status
+                            }
                         } else {
                             Focus::Graph
                         };
@@ -1641,6 +1645,7 @@ impl App {
             || self.rebase_plan.is_some()
             || self.error_popup.is_some()
             || self.stash_popup.is_some()
+            || self.command_picker.is_some()
         {
             return;
         }
@@ -1796,6 +1801,7 @@ impl App {
             || self.rebase_plan.is_some()
             || self.error_popup.is_some()
             || self.stash_popup.is_some()
+            || self.command_picker.is_some()
         {
             return;
         }
@@ -2084,13 +2090,7 @@ impl App {
             scroll.min(rows.saturating_sub(viewport.max(1)).min(u16::MAX as usize) as u16);
         self.diff_scroll_x = horizontal.min(self.diff_max_scroll_x());
         if let Some(view) = self.three_way_view.as_mut() {
-            let rows = view
-                .rows
-                .len()
-                .max(view.ours_diff.len())
-                .max(view.theirs_diff.len())
-                .max(view.result_diff.len());
-            view.scroll_y = view.scroll_y.min(rows.saturating_sub(1));
+            view.clamp_scroll();
         }
         self.refresh_diff_stats();
     }
@@ -2169,23 +2169,14 @@ impl App {
     }
 
     pub(super) fn selected_conflict_path(&self) -> Option<GitPath> {
-        if let Some(view) = &self.three_way_view {
-            let still_unresolved = self
-                .backend
+        if self.focus == Focus::Diff {
+            return self
+                .three_way_view
                 .as_ref()
-                .and_then(|backend| backend.status().ok())
-                .is_some_and(|status| {
-                    status
-                        .iter()
-                        .any(|entry| entry.path == view.path && entry.is_conflict())
-                });
-            if still_unresolved {
-                return Some(view.path.clone());
-            }
+                .filter(|view| self.active_conflict_paths.contains(&view.path))
+                .map(|view| view.path.clone());
         }
-        if !matches!(self.focus, Focus::Status | Focus::Diff)
-            || self.status_section != StatusSection::Unstaged
-        {
+        if self.focus != Focus::Status || self.status_section != StatusSection::Unstaged {
             return None;
         }
         self.status
@@ -2196,9 +2187,7 @@ impl App {
 
     pub(super) fn cancel_conflict_preview(&mut self) {
         if let Some(view) = self.three_way_view.as_mut() {
-            view.pending_resolution = None;
-            view.result_preview = false;
-            view.chosen_side = None;
+            view.cancel_preview();
         }
     }
 
@@ -2222,6 +2211,13 @@ impl App {
                 return;
             }
         };
+        if self
+            .three_way_view
+            .as_ref()
+            .is_some_and(|view| view.versions != versions)
+        {
+            self.refresh_diff();
+        }
         let Some(view) = self
             .three_way_view
             .as_mut()
@@ -2253,18 +2249,8 @@ impl App {
                 }
             }
         }
-        view.result_missing = versions.working.is_none();
-        view.working = versions.working.unwrap_or_default();
-        view.pending_resolution = Some(resolution);
-        view.result_preview = true;
-        view.chosen_side = Some(side);
-        view.scroll_y = match side {
-            ConflictSide::Ours => diff_hunk_scroll(&view.ours_diff, view.hunk_index),
-            ConflictSide::Theirs => diff_hunk_scroll(&view.theirs_diff, view.hunk_index),
-            ConflictSide::Base => Some(0),
-        }
-        .unwrap_or(0);
-        self.refresh_diff();
+        view.preview(resolution, side);
+        self.focus = Focus::Diff;
     }
 
     pub(super) fn confirm_selected_conflict_result(&mut self) {
@@ -2325,11 +2311,11 @@ impl App {
                 view.hunk_index = view.hunk_index.min(remaining_hunks - 1);
                 view.result_preview = false;
                 view.chosen_side = None;
-                view.scroll_y = diff_hunk_scroll(&view.ours_diff, view.hunk_index)
-                    .or_else(|| diff_hunk_scroll(&view.theirs_diff, view.hunk_index))
-                    .unwrap_or(0);
             }
             self.refresh_diff();
+            if let Some(view) = self.three_way_view.as_mut() {
+                view.jump_to_hunk();
+            }
         } else if let Some(backend) = self.backend.as_ref() {
             match backend.stage(&path) {
                 Ok(()) => self.focus_after_conflict_resolution(&path),
@@ -2342,21 +2328,17 @@ impl App {
         let Some(view) = self.three_way_view.as_mut() else {
             return false;
         };
-        let count = conflict_hunks(&String::from_utf8_lossy(&view.working)).len();
+        let count = view.hunks.len();
         if count == 0 {
             return false;
         }
+        view.cancel_preview();
         view.hunk_index = if delta < 0 {
             (view.hunk_index + count - 1) % count
         } else {
             (view.hunk_index + 1) % count
         };
-        view.pending_resolution = None;
-        view.result_preview = false;
-        view.chosen_side = None;
-        view.scroll_y = diff_hunk_scroll(&view.ours_diff, view.hunk_index)
-            .or_else(|| diff_hunk_scroll(&view.theirs_diff, view.hunk_index))
-            .unwrap_or(0);
+        view.jump_to_hunk();
         true
     }
 
@@ -2505,11 +2487,9 @@ impl App {
             Focus::Status => self.move_status_selection(delta * page as i32, false),
             Focus::Diff => {
                 if let Some(view) = &mut self.three_way_view {
-                    view.scroll_y = if delta < 0 {
-                        view.scroll_y.saturating_sub(page)
-                    } else {
-                        view.scroll_y.saturating_add(page)
-                    };
+                    view.scroll_by(
+                        delta as isize * view.viewport_height.saturating_sub(1).max(1) as isize,
+                    );
                 } else if delta < 0 {
                     self.diff_scroll = self.diff_scroll.saturating_sub(page as u16);
                 } else {

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0-alpha.6 - 2026-10-26
+
+### Improved
+
+- Open a fuzzy command picker with `:` for the focused panel, with commands adapted to the current selection and repository state.
+- Prioritize Fetch, Pull, Checkout, and Search in graph shortcuts, and simplify the commit search bar and navigation hints.
+- Render only visible conflict rows with cached syntax highlighting, keeping large three-way merges responsive while scrolling.
+- Align Ours, Theirs, and Result on one shared row grid, with synchronized scrolling, fixed line-number gutters, and active-conflict highlighting.
+- Keep file lists compact during conflict resolution, and clarify conflict previews, confirmation, cancellation, and whole-file Base restoration.
+
+### Fixed
+
+- Jump to the selected conflict when navigating hunks, and consistently clamp keyboard, page, and mouse scrolling while preserving wheel distance.
+- Apply horizontal panning to all three conflict panes, including result previews and wide characters.
+- Keep local resolver commands available while inspecting historical commits, and focus the resolver when opening a repository with conflicts.
+- Preserve preview safety checks for external edits, missing-file deletions, and partially resolved files.
+
 ## 0.1.0-alpha.5 - 2026-10-26
 
 ### Improved

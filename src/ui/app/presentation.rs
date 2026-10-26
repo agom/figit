@@ -74,6 +74,7 @@ impl App {
                 [Rect::default(), area]
             };
         }
+        let vertical = self.graph_visible && self.three_way_view.is_none();
         let empty = [
             self.unstaged_indices.is_empty(),
             self.staged_indices.is_empty(),
@@ -81,7 +82,7 @@ impl App {
         let constraints = if empty[0] == empty[1] {
             [Constraint::Percentage(50), Constraint::Min(0)]
         } else {
-            let compact = if self.graph_visible {
+            let compact = if vertical {
                 3
             } else {
                 (area.width / 5).clamp(16, 22).min(area.width / 2)
@@ -92,7 +93,7 @@ impl App {
                 [Constraint::Min(0), Constraint::Length(compact)]
             }
         };
-        let panes = if self.graph_visible {
+        let panes = if vertical {
             Layout::vertical(constraints).split(area)
         } else {
             Layout::horizontal(constraints).split(area)
@@ -235,25 +236,31 @@ impl App {
             Focus::Graph => {
                 if self.pending_fixup && self.selected_commit_id().is_some() {
                     actions.push(("Enter", "fixup"));
-                } else if self.remote_operation.is_none() {
-                    if self.selected_commit_id().is_some() {
-                        if self.selected_local_branch().is_some() {
-                            actions.push(("Enter", "checkout"));
+                } else {
+                    let available = self.panel_commands();
+                    for (id, label) in [
+                        (CommandId::Fetch, "fetch"),
+                        (CommandId::Graph(GraphAction::Pull), "pull"),
+                        (CommandId::Graph(GraphAction::CheckoutBranch), "checkout"),
+                        (CommandId::Search, "search"),
+                    ] {
+                        let command =
+                            available
+                                .iter()
+                                .find(|command| command.id == id)
+                                .or_else(|| {
+                                    (id == CommandId::Graph(GraphAction::CheckoutBranch))
+                                        .then(|| {
+                                            available.iter().find(|command| {
+                                                command.id
+                                                    == CommandId::Graph(GraphAction::Checkout)
+                                            })
+                                        })
+                                        .flatten()
+                                });
+                        if let Some(command) = command {
+                            actions.push((command.key, label));
                         }
-                        actions.push(("/", "search"));
-                        actions.push((
-                            "p",
-                            if self.selected_current_branch() {
-                                "pull"
-                            } else {
-                                "pick commit"
-                            },
-                        ));
-                    } else {
-                        if self.commit_actions_available() {
-                            actions.push(("c", "commit"));
-                        }
-                        actions.push(("/", "search"));
                     }
                 }
             }
@@ -263,7 +270,7 @@ impl App {
                 if self.remote_operation.is_none() {
                     actions.extend([
                         ("o/t", "preview side"),
-                        ("b", "whole Base"),
+                        ("b", "restore whole file"),
                         ("e", "editor"),
                     ]);
                 }
@@ -333,7 +340,7 @@ impl App {
             }
             _ => {}
         }
-        actions.truncate(3);
+        actions.truncate(if self.focus == Focus::Graph { 4 } else { 3 });
         actions
     }
 
@@ -341,6 +348,8 @@ impl App {
         styled_key_hints_fitting(
             &[
                 ("Tab", "focus"),
+                (":", "Commands"),
+                ("?", "help"),
                 ("g", "graph"),
                 (
                     "z",
@@ -351,7 +360,6 @@ impl App {
                     },
                 ),
                 ("H", "hints"),
-                ("?", "help"),
                 ("q", "quit"),
             ],
             Color::LightCyan,

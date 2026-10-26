@@ -19,6 +19,25 @@ impl App {
                 Focus::Status => (hidden, hidden, body_area, hidden),
                 Focus::Diff | Focus::Commit => (hidden, hidden, hidden, body_area),
             }
+        } else if self.three_way_view.is_some() {
+            // Keep repository navigation compact while conflicts own the view.
+            let file_rows = self
+                .unstaged_indices
+                .len()
+                .max(self.staged_indices.len())
+                .clamp(1, 4) as u16;
+            let top_height = (file_rows + 2)
+                .max(if self.graph_visible { 6 } else { 3 })
+                .min(body_area.height / 3);
+            let body = Layout::vertical([Constraint::Length(top_height), Constraint::Min(0)])
+                .split(body_area);
+            if self.graph_visible {
+                let top = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(0)])
+                    .split(body[0]);
+                (top[0], hidden, top[1], body[1])
+            } else {
+                (hidden, hidden, body[0], body[1])
+            }
         } else if !self.graph_visible {
             // Keep the diff boundary stable as files move between the lists.
             let top_height = (body_area.height / 3).max(5).min(body_area.height / 2);
@@ -31,12 +50,6 @@ impl App {
             } else {
                 (hidden, hidden, body[0], body[1])
             }
-        } else if self.three_way_view.is_some() {
-            let vertical =
-                Layout::vertical([Constraint::Percentage(40), Constraint::Min(0)]).split(body_area);
-            let upper = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(0)])
-                .split(vertical[0]);
-            (upper[0], hidden, upper[1], vertical[1])
         } else {
             let body = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(0)])
                 .split(body_area);
@@ -304,7 +317,7 @@ impl App {
             let last_column = status_area.x + status_area.width.saturating_sub(1);
             let column = status_area
                 .x
-                .saturating_add(8)
+                .saturating_add("Search: ".len() as u16)
                 .saturating_add(search.cursor.min(u16::MAX as usize) as u16)
                 .min(last_column);
             f.set_cursor_position(Position {
@@ -333,6 +346,7 @@ impl App {
         if self.help_popup {
             self.render_help_popup(f, area);
         }
+        self.render_command_picker(f);
         self.apply_terminal_theme(f.buffer_mut());
     }
 
@@ -342,6 +356,7 @@ impl App {
                 "Global",
                 &[
                     ("Tab / Shift+Tab", "next / previous pane"),
+                    (":", "find commands for the focused panel"),
                     ("z", "maximize / restore focused pane"),
                     ("g", "toggle graph pane"),
                     ("Shift+H", "show/hide focused-panel shortcuts"),
@@ -549,235 +564,6 @@ impl App {
             .block(Block::default().borders(Borders::ALL)),
             panes[1],
         );
-    }
-
-    fn render_three_way_view(&self, f: &mut Frame, area: Rect) {
-        let Some(view) = &self.three_way_view else {
-            return;
-        };
-        let mut actions = vec![("o/t/b", "choose"), ("[/]", "hunk"), ("e", "edit")];
-        if view.result_preview {
-            actions.push(("Enter", "confirm result"));
-            actions.push(("Esc", "cancel preview"));
-        }
-        // Panning and scrolling only work while the diff pane is focused.
-        if self.focus == Focus::Diff {
-            actions.push(("h/l", "pan"));
-        }
-        let hints = styled_key_hints(&actions, Color::LightCyan);
-        let border = Style::default()
-            .fg(Color::Rgb(255, 105, 180))
-            .add_modifier(Modifier::BOLD);
-        let working = String::from_utf8_lossy(&view.working);
-        let hunk_count = conflict_hunks(&working).len();
-        let title = if hunk_count > 0 {
-            format!(
-                "Three-way merge — {} · Hunk {}/{}",
-                view.path,
-                view.hunk_index + 1,
-                hunk_count
-            )
-        } else {
-            format!("Three-way merge — {}", view.path)
-        };
-        f.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .title_bottom(hints)
-                .border_style(border),
-            area,
-        );
-        let inner = area.inner(Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
-        if inner.width < 24 || inner.height < 7 {
-            f.render_widget(
-                Paragraph::new("Terminal too small for the conflict resolver")
-                    .wrap(Wrap { trim: false }),
-                inner,
-            );
-            return;
-        }
-        let sections =
-            Layout::vertical([Constraint::Percentage(50), Constraint::Min(0)]).split(inner);
-        let sides =
-            Layout::horizontal([Constraint::Percentage(50), Constraint::Min(0)]).split(sections[0]);
-        let (ours_color, theirs_color) = self
-            .conflict_colors()
-            .unwrap_or((Color::LightBlue, Color::LightYellow));
-        let ours_selected = view.chosen_side == Some(ConflictSide::Ours);
-        let theirs_selected = view.chosen_side == Some(ConflictSide::Theirs);
-        let short_id = |id: &str| id.chars().take(7).collect::<String>();
-        let ids = self.conflict_commits.as_ref();
-        let ours_title = format!(
-            "Ours {}{}",
-            ids.map_or(String::new(), |commits| short_id(&commits.ours)),
-            if view.ours_missing { " (deleted)" } else { "" }
-        );
-        let theirs_title = format!(
-            "Theirs {}{}",
-            ids.map_or(String::new(), |commits| short_id(&commits.theirs)),
-            if view.theirs_missing {
-                " (deleted)"
-            } else {
-                ""
-            }
-        );
-        let ours_block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(ours_title, Style::default().fg(ours_color)))
-            .border_style(conflict_side_border_style(
-                ours_color,
-                ours_selected,
-                &self.terminal_palette,
-            ));
-        let theirs_block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                theirs_title,
-                Style::default().fg(theirs_color),
-            ))
-            .border_style(conflict_side_border_style(
-                theirs_color,
-                theirs_selected,
-                &self.terminal_palette,
-            ));
-        let ours_area = sides[0].inner(Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
-        let theirs_area = sides[1].inner(Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
-        let side_visible = usize::from(ours_area.height.min(theirs_area.height));
-        let vertical_scroll = view.scroll_y.min(u16::MAX as usize) as u16;
-        let horizontal_scroll = view.scroll_x.min(u16::MAX as usize) as u16;
-        let display_path = view.path.display();
-        let ours_rows = render_conflict_side_diff(
-            &view.ours_diff,
-            display_path.as_ref(),
-            self.diff_number_width,
-            usize::from(ours_area.width),
-            self.diff_mode,
-            ours_color,
-            &self.terminal_palette,
-        );
-        let theirs_rows = render_conflict_side_diff(
-            &view.theirs_diff,
-            display_path.as_ref(),
-            self.diff_number_width,
-            usize::from(theirs_area.width),
-            self.diff_mode,
-            theirs_color,
-            &self.terminal_palette,
-        );
-        f.render_widget(
-            Paragraph::new(ours_rows)
-                .scroll((vertical_scroll, horizontal_scroll))
-                .block(ours_block),
-            sides[0],
-        );
-        f.render_widget(
-            Paragraph::new(theirs_rows)
-                .scroll((vertical_scroll, horizontal_scroll))
-                .block(theirs_block),
-            sides[1],
-        );
-
-        let result_title =
-            if view.result_preview && view.pending_resolution == Some(ConflictResolution::Delete) {
-                "Delete entire file — Enter confirm · Esc cancel"
-            } else if view.result_preview {
-                match view.chosen_side {
-                    Some(ConflictSide::Ours) => "Result vs Base — Ours",
-                    Some(ConflictSide::Theirs) => "Result vs Base — Theirs",
-                    Some(ConflictSide::Base) => {
-                        "Restore entire file from Base — Enter confirm · Esc cancel"
-                    }
-                    None => "Result vs Base — Edited",
-                }
-            } else if view.result_missing {
-                "Result (deleted)"
-            } else {
-                "Result (conflict markers)"
-            };
-        let result_block = Block::default()
-            .borders(Borders::ALL)
-            .title(result_title)
-            .border_style(Style::default().fg(Color::LightRed));
-        let result_area = sections[1].inner(Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
-        let result_visible = usize::from(result_area.height);
-        let result_rows = if view.result_preview {
-            let result_side_color = if view.chosen_side == Some(ConflictSide::Theirs) {
-                theirs_color
-            } else {
-                ours_color
-            };
-            render_conflict_side_diff(
-                &view.result_diff,
-                display_path.as_ref(),
-                self.diff_number_width,
-                usize::from(result_area.width),
-                self.diff_mode,
-                result_side_color,
-                &self.terminal_palette,
-            )
-            .into_iter()
-            .skip(view.scroll_y)
-            .take(result_visible)
-            .collect::<Vec<_>>()
-        } else {
-            view.rows
-                .iter()
-                .skip(view.scroll_y)
-                .take(result_visible)
-                .map(|row| {
-                    three_way_column(
-                        row.result.as_ref(),
-                        row.base.as_ref(),
-                        display_path.as_ref(),
-                        usize::from(result_area.width),
-                        view.scroll_x,
-                        Color::White,
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        f.render_widget(Paragraph::new(result_rows).block(result_block), sections[1]);
-
-        let content_rows = view
-            .rows
-            .len()
-            .max(view.ours_diff.len())
-            .max(view.theirs_diff.len())
-            .max(if view.result_preview {
-                view.result_diff.len()
-            } else {
-                0
-            });
-        if content_rows > side_visible.max(result_visible) {
-            let mut state = ScrollbarState::new(content_rows)
-                .position(
-                    view.scroll_y
-                        .min(content_rows.saturating_sub(side_visible.max(result_visible))),
-                )
-                .viewport_content_length(side_visible.max(result_visible));
-            f.render_stateful_widget(
-                minimal_scrollbar(if self.focus == Focus::Diff {
-                    Color::LightCyan
-                } else {
-                    Color::DarkGray
-                }),
-                border_scrollbar_area(area),
-                &mut state,
-            );
-        }
     }
 
     fn render_stash_popup(&self, f: &mut Frame, area: Rect) {
@@ -2455,9 +2241,31 @@ impl App {
             .head_name
             .clone()
             .unwrap_or_else(|| "(detached)".to_string());
+        if self
+            .command_picker
+            .as_ref()
+            .is_some_and(|picker| self.command_picker_area(picker.commands.len()).is_none())
+        {
+            return Line::from(Span::styled(
+                "Commands: panel too small · Esc close",
+                Style::default().fg(Color::LightYellow),
+            ));
+        }
+        if self.command_picker.is_some() {
+            return styled_key_hints_fitting(
+                &[
+                    ("Type", "filter"),
+                    ("↑/↓", "select"),
+                    ("Enter", "run"),
+                    ("Esc", "close"),
+                ],
+                Color::LightCyan,
+                self.viewport_width as usize,
+            );
+        }
         if let Some(search) = &self.search_popup {
             let mut spans = vec![Span::styled(
-                format!("Search /{}", search.query),
+                format!("Search: {}", search.query),
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
@@ -2465,11 +2273,11 @@ impl App {
             let summary = if let Some(error) = &search.error {
                 format!(" · {}", truncate(error, 48))
             } else if search.searched && search.matches.is_empty() {
-                " · 0 matches".to_string()
+                " · 0 matches · / new search · Esc close".to_string()
             } else if search.searched {
                 let count = search.matches.len();
                 format!(
-                    " · {count} match{} · {}/{}",
+                    " · {count} match{} · {}/{} · ↑/↓ result · Esc close",
                     if count == 1 { "" } else { "es" },
                     search.selected + 1,
                     count
