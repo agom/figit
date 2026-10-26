@@ -1888,7 +1888,7 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
         repository.path(),
         &["rev-parse", "--git-path", "rebase-merge"],
     );
-    assert!(repository.path().join(state_path).exists());
+    assert!(repository.path().join(&state_path).exists());
 
     // The selected commit's patch is staged. Confirm a replacement commit.
     tui.send(b"c");
@@ -1950,7 +1950,14 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
     tui.wait_for("Staged (0)");
     tui.wait_for("Ctrl+C continue");
     tui.send(b"\x03");
-    tui.wait_until_hidden("rebase paused");
+    // The status can say "rebase active" rather than "rebase paused";
+    // waiting for that text to disappear can return before Git continues.
+    let rebase_state = repository.path().join(&state_path);
+    tui.wait_until(
+        Duration::from_secs(30),
+        |contents| format!("rebase did not finish; terminal contained:\n{contents}"),
+        |_, _| (!rebase_state.exists()).then_some(()),
+    );
     assert_eq!(
         git_ok(repository.path(), &["log", "--format=%s", "-4"]),
         "tip commit\nsplit remainder\nrenamed commit\nroot commit"
