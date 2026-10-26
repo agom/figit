@@ -21,7 +21,14 @@ Inspecting a commit shows its details and syntax-highlighted diff:
   <img src="assets/screenshot-commit.png" alt="figit showing a commit's details and diff" width="880">
 </p>
 
-Resolve merge conflicts with a three-way Ours / Theirs / Result view:
+Resolve merge conflicts with an aligned Ours / Theirs / Result view. The active
+conflict is highlighted; `[`/`]` jumps between conflicts. With the resolver
+focused, `o`/`t` previews that conflict’s Ours/Theirs version, `Enter` confirms, and `Esc` cancels the preview.
+`b` explicitly previews restoring the **entire file** from Base. Use `e` for an
+external editor or `:` for resolver commands. Arrow keys, mouse scrolling, and
+Page Up/Down keep all three panes synchronized; `z` maximizes the resolver.
+
+The file lists stay compact while resolving conflicts:
 
 <p align="center">
   <img src="assets/screenshot-conflict.png" alt="figit resolving a merge conflict with a three-way view" width="880">
@@ -76,15 +83,25 @@ figit --version
 | `/` | Search commits: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
 | `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
 | `U` | Check for or install an update |
+| `:` | Fuzzy-find commands for the focused panel |
 | `Shift+H` | Show / hide shortcuts in the focused panel’s bottom border |
 | `?` | Toggle the in-app key map |
 | `q` | Quit |
 | `Esc` | Close the active overlay |
 
-The focused panel shows up to three relevant shortcuts in its bottom border.
+The focused panel shows compact shortcuts in its bottom border. The graph
+prioritizes Fetch, Pull, Checkout, and Search; Pull appears only when `p` pulls
+the current branch. Other panels show up to three relevant shortcuts.
 Hints adapt to the selected file and diff mode, and fit without wrapping in narrow
 panels. Press `Shift+H` to hide or show them for the current session; hints start
 visible on each launch. Press `?` for the full key map.
+
+Press `:` to open commands above the focused panel’s bottom border. Type to
+fuzzy-filter command names, use `↑`/`↓` to select, `Enter` to run, and `Esc` to
+close. Commands depend on the current panel and selection. Existing confirmation
+dialogs still apply. Printable keys, including `j`/`k`, enter text in the picker.
+The existing context-sensitive `p` shortcut still cherry-picks other commits;
+Cherry-pick is also available in the Graph command picker.
 
 External repository changes refresh automatically. If filesystem watching is
 unavailable (for example, Linux watch limits are reached), Figit falls back to

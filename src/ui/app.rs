@@ -773,88 +773,6 @@ fn pad_colored_lines<'a>(lines: &mut [Line<'a>], width: usize) {
     }
 }
 
-fn conflict_result_diff(base: &str, result: &str, result_label: &str) -> Vec<DiffLine> {
-    let diff = TextDiff::from_lines(base, result);
-    let mut lines = vec![DiffLine {
-        old_no: None,
-        new_no: None,
-        text: format!("Base → {result_label}"),
-        kind: DiffKind::Meta,
-    }];
-    let (mut old_no, mut new_no) = (1, 1);
-    for op in diff.ops() {
-        for change in diff.iter_changes(op) {
-            let text = change.value().strip_suffix('\n').unwrap_or(change.value());
-            let line = match change.tag() {
-                ChangeTag::Equal => {
-                    let line = DiffLine {
-                        old_no: Some(old_no),
-                        new_no: Some(new_no),
-                        text: format!(" {text}"),
-                        kind: DiffKind::Context,
-                    };
-                    old_no += 1;
-                    new_no += 1;
-                    line
-                }
-                ChangeTag::Delete => {
-                    let line = DiffLine {
-                        old_no: Some(old_no),
-                        new_no: None,
-                        text: format!("-{text}"),
-                        kind: DiffKind::Removed,
-                    };
-                    old_no += 1;
-                    line
-                }
-                ChangeTag::Insert => {
-                    let line = DiffLine {
-                        old_no: None,
-                        new_no: Some(new_no),
-                        text: format!("+{text}"),
-                        kind: DiffKind::Added,
-                    };
-                    new_no += 1;
-                    line
-                }
-            };
-            lines.push(line);
-        }
-    }
-    lines
-}
-
-fn render_conflict_side_diff(
-    lines: &[DiffLine],
-    path: &str,
-    number_width: usize,
-    width: usize,
-    mode: DiffMode,
-    side_color: Color,
-    terminal_palette: &TerminalAnsiPalette,
-) -> Vec<Line<'static>> {
-    let side_background = darker_color(side_color, terminal_palette);
-    let mut rendered = render_diff(lines, mode, width, path, number_width, 0, true)
-        .into_iter()
-        .map(|mut line| {
-            for span in &mut line.spans {
-                if span.style.fg == Some(Color::LightGreen) {
-                    span.style = span.style.fg(side_color);
-                }
-                if matches!(
-                    span.style.bg,
-                    Some(Color::Rgb(38, 56, 43) | Color::Rgb(54, 91, 60))
-                ) {
-                    span.style = span.style.bg(side_background);
-                }
-            }
-            line
-        })
-        .collect::<Vec<_>>();
-    pad_colored_lines(&mut rendered, width);
-    rendered
-}
-
 fn parse_hunk_header(line: &str) -> Option<(u32, u32)> {
     let mut parts = line.split_whitespace();
     parts.next()?;
@@ -1096,6 +1014,7 @@ fn unified_partners(lines: &[DiffLine]) -> HashMap<usize, usize> {
     partners
 }
 
+#[cfg(test)]
 fn render_diff(
     lines: &[DiffLine],
     mode: DiffMode,
@@ -1430,6 +1349,12 @@ fn syntax_highlight(code: &str, path: &str, fallback: Color) -> Vec<Span<'static
             Style::default().fg(fallback),
         )];
     };
+    if syntax_ref.name == "Plain Text" {
+        return vec![Span::styled(
+            code.to_string(),
+            Style::default().fg(fallback),
+        )];
+    }
     let theme = themes
         .themes
         .get("base16-ocean.dark")
@@ -1633,6 +1558,7 @@ pub struct App {
     details_loading: bool,
     details_error: Option<String>,
     search_popup: Option<SearchPopupState>,
+    command_picker: Option<CommandPickerState>,
     remote_tx: Sender<RemoteCompletion>,
     remote_rx: Receiver<RemoteCompletion>,
     remote_operation: Option<RemoteOperation>,
@@ -2099,10 +2025,19 @@ struct ThreeWayRow {
 
 struct ThreeWayView {
     path: GitPath,
-    rows: Vec<ThreeWayRow>,
-    ours_diff: Vec<DiffLine>,
-    theirs_diff: Vec<DiffLine>,
-    result_diff: Vec<DiffLine>,
+    versions: crate::backend::ConflictVersions,
+    sources: conflict::ConflictSources,
+    rows: std::sync::Arc<Vec<ThreeWayRow>>,
+    working_rows: std::sync::Arc<Vec<ThreeWayRow>>,
+    hunks: Vec<ConflictHunk>,
+    resolves_hunks: bool,
+    hunk_rows: Vec<std::ops::Range<usize>>,
+    working_hunk_rows: Vec<std::ops::Range<usize>>,
+    line_cache: std::cell::RefCell<HashMap<conflict::ConflictLineKey, Line<'static>>>,
+    max_columns: usize,
+    number_width: usize,
+    viewport_height: usize,
+    viewport_width: usize,
     working: Vec<u8>,
     pending_resolution: Option<ConflictResolution>,
     result_preview: bool,
@@ -2190,15 +2125,6 @@ fn replace_conflict_hunk(text: &str, hunk_index: usize, side: ConflictSide) -> O
     Some(result)
 }
 
-fn diff_hunk_scroll(lines: &[DiffLine], hunk_index: usize) -> Option<usize> {
-    lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| line.kind == DiffKind::Meta && line.text.starts_with("@@"))
-        .nth(hunk_index)
-        .map(|(index, _)| index)
-}
-
 struct AlignedSide {
     lines: Vec<Option<ThreeWayCell>>,
     insertions: Vec<Vec<ThreeWayCell>>,
@@ -2279,42 +2205,11 @@ fn align_conflict_side(base: &str, side: &str) -> AlignedSide {
     aligned
 }
 
+#[cfg(test)]
 fn three_way_rows(versions: &crate::backend::ConflictVersions) -> Vec<ThreeWayRow> {
-    let base = String::from_utf8_lossy(versions.base.as_deref().unwrap_or_default());
-    let ours = String::from_utf8_lossy(versions.ours.as_deref().unwrap_or_default());
-    let theirs = String::from_utf8_lossy(versions.theirs.as_deref().unwrap_or_default());
-    let working = String::from_utf8_lossy(versions.working.as_deref().unwrap_or_default());
-    let base_lines = display_lines(&base);
-    let ours = align_conflict_side(&base, &ours);
-    let theirs = align_conflict_side(&base, &theirs);
-    let result = align_conflict_side(&base, &working);
-    let mut rows = Vec::new();
-    for index in 0..=base_lines.len() {
-        let count = ours.insertions[index]
-            .len()
-            .max(theirs.insertions[index].len())
-            .max(result.insertions[index].len());
-        for offset in 0..count {
-            rows.push(ThreeWayRow {
-                base: None,
-                ours: ours.insertions[index].get(offset).cloned(),
-                theirs: theirs.insertions[index].get(offset).cloned(),
-                result: result.insertions[index].get(offset).cloned(),
-            });
-        }
-        if let Some(text) = base_lines.get(index) {
-            rows.push(ThreeWayRow {
-                base: Some(ThreeWayCell {
-                    number: index + 1,
-                    text: text.clone(),
-                }),
-                ours: ours.lines[index].clone(),
-                theirs: theirs.lines[index].clone(),
-                result: result.lines[index].clone(),
-            });
-        }
-    }
-    rows
+    conflict::ConflictSources::new(versions).rows_for_result(&String::from_utf8_lossy(
+        versions.working.as_deref().unwrap_or_default(),
+    ))
 }
 
 fn three_way_column(
@@ -2324,22 +2219,38 @@ fn three_way_column(
     width: usize,
     horizontal_scroll: usize,
     color: Color,
+    number_width: usize,
 ) -> Line<'static> {
-    let number_width = 4.min(width);
+    let number_width = number_width.min(width);
     let text_width = width.saturating_sub(number_width);
     let changed = cell.is_some_and(|cell| base.is_none_or(|base| cell.text != base.text));
     let number = cell.map_or_else(
         || " ".repeat(number_width),
-        |cell| format!("{:>3} ", cell.number),
+        |cell| {
+            format!(
+                "{:>width$} ",
+                cell.number,
+                width = number_width.saturating_sub(1)
+            )
+        },
     );
     let number = truncate_start(&number, number_width);
     let text = cell.map_or_else(String::new, |cell| {
+        let mut columns = 0;
+        let start = cell
+            .text
+            .char_indices()
+            .find_map(|(byte, character)| {
+                if columns >= horizontal_scroll {
+                    return Some(byte);
+                }
+                columns += Line::from(character.to_string()).width();
+                None
+            })
+            .unwrap_or(cell.text.len());
+        let partial_glyph = " ".repeat(columns.saturating_sub(horizontal_scroll).min(text_width));
         fit_to_cells(
-            &cell
-                .text
-                .chars()
-                .skip(horizontal_scroll)
-                .collect::<String>(),
+            &format!("{partial_glyph}{}", &cell.text[start..]),
             text_width,
         )
     });
@@ -2494,6 +2405,7 @@ impl App {
             details_loading: false,
             details_error: None,
             search_popup: None,
+            command_picker: None,
             remote_tx,
             remote_rx,
             remote_operation: None,
@@ -2700,62 +2612,21 @@ impl App {
             })
             .or_else(|| active_conflicts.first().cloned());
         self.three_way_view = resolver_path.and_then(|path| {
-            self.backend
-                .as_ref()
-                .and_then(|backend| backend.conflict_versions(&path).ok().flatten())
-                .map(|versions| {
-                    let base =
-                        String::from_utf8_lossy(versions.base.as_deref().unwrap_or_default());
-                    let ours =
-                        String::from_utf8_lossy(versions.ours.as_deref().unwrap_or_default());
-                    let theirs =
-                        String::from_utf8_lossy(versions.theirs.as_deref().unwrap_or_default());
-                    let result =
-                        String::from_utf8_lossy(versions.working.as_deref().unwrap_or_default());
-                    let working = versions.working.clone().unwrap_or_default();
-                    let mut view = ThreeWayView {
-                        path: path.clone(),
-                        rows: three_way_rows(&versions),
-                        ours_diff: conflict_result_diff(&base, &ours, "Ours"),
-                        theirs_diff: conflict_result_diff(&base, &theirs, "Theirs"),
-                        result_diff: conflict_result_diff(&base, &result, "Result"),
-                        working,
-                        pending_resolution: None,
-                        result_preview: false,
-                        chosen_side: None,
-                        hunk_index: 0,
-                        ours_missing: versions.ours.is_none(),
-                        theirs_missing: versions.theirs.is_none(),
-                        result_missing: versions.working.is_none(),
-                        scroll_y: 0,
-                        scroll_x: 0,
-                    };
-                    if let Some(previous) = previous_three_way_view
-                        .as_ref()
-                        .filter(|previous| previous.path == path)
-                    {
-                        let unchanged = previous.working == view.working
-                            && previous.result_missing == view.result_missing;
-                        if unchanged {
-                            view.result_preview = previous.result_preview;
-                            view.chosen_side = previous.chosen_side;
-                            view.pending_resolution = previous.pending_resolution.clone();
-                        } else if previous.result_preview {
-                            self.action_error = Some("Conflict file changed; preview cancelled. Review the current contents before confirming.".into());
-                        }
-                        view.hunk_index = previous.hunk_index;
-                        view.scroll_y = previous.scroll_y;
-                        view.scroll_x = previous.scroll_x;
-                        if let Some(pending) = view.pending_resolution.as_ref() {
-                            let result = String::from_utf8_lossy(pending.content().unwrap_or_default());
-                            view.result_diff = conflict_result_diff(&base, &result, "Result");
-                        }
-                        let hunk_count =
-                            conflict_hunks(&String::from_utf8_lossy(&view.working)).len();
-                        view.hunk_index = view.hunk_index.min(hunk_count.saturating_sub(1));
-                    }
-                    view
-                })
+            let versions = self.backend.as_ref()?.conflict_versions(&path).ok().flatten()?;
+            if let Some(previous) = previous_three_way_view.filter(|view| view.path == path) {
+                if previous.versions == versions { return Some(previous); }
+                if previous.result_preview {
+                    self.action_error = Some("Conflict file changed; preview cancelled. Review the current contents before confirming.".into());
+                }
+                let mut view = ThreeWayView::new(path, versions);
+                view.hunk_index = previous.hunk_index.min(view.hunks.len().saturating_sub(1));
+                view.scroll_y = previous.scroll_y;
+                view.scroll_x = previous.scroll_x;
+                view.clamp_scroll();
+                Some(view)
+            } else {
+                Some(ThreeWayView::new(path, versions))
+            }
         });
         if self.hunk_mode
             && (self.three_way_view.is_some()
@@ -3309,10 +3180,25 @@ impl App {
             && self.stash_popup.is_none()
             && !self.help_popup
             && self.search_popup.is_none()
+            && self.command_picker.is_none()
     }
 
     /// Returns `true` when the app should quit.
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.command_picker.is_some() {
+            self.handle_command_picker_key(key);
+            return false;
+        }
+        if key.code == KeyCode::Char(':')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+            && self.modal_closed()
+            && !self.loading
+        {
+            self.open_command_picker();
+            return false;
+        }
         if key.code == KeyCode::Char('H')
             && !key
                 .modifiers
@@ -3416,7 +3302,6 @@ impl App {
                 .is_some_and(|view| view.result_preview)
             {
                 self.cancel_conflict_preview();
-                self.refresh_diff();
                 return false;
             }
         }
@@ -3424,14 +3309,14 @@ impl App {
             && matches!(self.focus, Focus::Status | Focus::Diff)
             && (self.hunk_mode || self.line_mode)
         {
-            self.select_file_mode();
+            self.execute_panel_command(CommandId::FileMode);
             return false;
         }
         if matches!(self.focus, Focus::Status | Focus::Diff)
             && (key.code == KeyCode::Char('F')
                 || (key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::SHIFT)))
         {
-            self.apply_selected_file_changes();
+            self.execute_panel_command(CommandId::ApplyFile);
             return false;
         }
         if matches!(key.code, KeyCode::Char('s' | 'S'))
@@ -3439,7 +3324,7 @@ impl App {
             && !self.commit_popup
             && !self.abort_rebase_popup
         {
-            self.open_stash_manager();
+            self.execute_panel_command(CommandId::Stash);
             return false;
         }
         if self.graph_action.is_none() && !self.commit_popup && !self.abort_rebase_popup {
@@ -3777,79 +3662,93 @@ impl App {
             KeyCode::Char('b')
                 if self.focus == Focus::Graph && self.selected_conflict_path().is_none() =>
             {
-                self.open_graph_action(GraphAction::Branch)
+                self.execute_panel_command(CommandId::Graph(GraphAction::Branch))
             }
             KeyCode::Char('t')
                 if self.focus == Focus::Graph && self.selected_conflict_path().is_none() =>
             {
-                self.open_graph_action(GraphAction::Tag)
+                self.execute_panel_command(CommandId::Graph(GraphAction::Tag))
             }
             KeyCode::Char('r') if self.focus == Focus::Graph => {
-                self.open_graph_action(GraphAction::Reset)
+                self.execute_panel_command(CommandId::Graph(GraphAction::Reset))
             }
             KeyCode::Char('c') if self.focus == Focus::Graph => {
-                self.open_graph_action(GraphAction::Checkout)
+                self.execute_panel_command(CommandId::Graph(GraphAction::Checkout))
             }
-            KeyCode::Char('w') if self.focus == Focus::Graph => self.open_reword_popup(),
+            KeyCode::Char('w') if self.focus == Focus::Graph => {
+                self.execute_panel_command(CommandId::Reword)
+            }
             KeyCode::Char('e')
                 if self.focus == Focus::Graph && self.selected_conflict_path().is_none() =>
             {
-                self.open_edit_confirmation()
+                self.execute_panel_command(CommandId::Edit)
             }
-            KeyCode::Char('i') if self.focus == Focus::Graph => self.open_rebase_plan(),
+            KeyCode::Char('i') if self.focus == Focus::Graph => {
+                self.execute_panel_command(CommandId::RebasePlan)
+            }
             KeyCode::Char('R') if self.focus == Focus::Graph => {
-                self.open_graph_action(GraphAction::RebaseOnto)
+                self.execute_panel_command(CommandId::Graph(GraphAction::RebaseOnto))
             }
             KeyCode::Char('o')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
-                self.choose_selected_conflict_side(ConflictSide::Ours);
+                self.execute_panel_command(CommandId::Conflict(ConflictSide::Ours));
             }
             KeyCode::Char('t')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
-                self.choose_selected_conflict_side(ConflictSide::Theirs);
+                self.execute_panel_command(CommandId::Conflict(ConflictSide::Theirs));
             }
             KeyCode::Char('b')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
-                self.choose_selected_conflict_side(ConflictSide::Base);
+                self.execute_panel_command(CommandId::Conflict(ConflictSide::Base));
             }
             KeyCode::Char('e')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
-                self.open_selected_conflict_editor();
+                self.execute_panel_command(CommandId::Editor);
             }
             KeyCode::Char('w') if self.graph_action.is_none() && !self.commit_popup => {
                 self.action_error =
                     Some("Focus the Graph with Tab and select a commit first".into());
             }
             KeyCode::Char('p') if self.focus == Focus::Graph && !self.selected_current_branch() => {
-                self.open_graph_action(GraphAction::CherryPick)
+                self.execute_panel_command(CommandId::Graph(GraphAction::CherryPick))
             }
             KeyCode::Char('x') if self.focus == Focus::Graph => {
-                self.open_graph_action(GraphAction::Revert)
+                self.execute_panel_command(CommandId::Graph(GraphAction::Revert))
             }
-            KeyCode::Char('u') if self.modal_closed() => self.open_undo_popup(),
-            KeyCode::Char('/') if self.modal_closed() => self.open_search_popup(),
+            KeyCode::Char('u') if self.modal_closed() => {
+                self.execute_panel_command(CommandId::Undo)
+            }
+            KeyCode::Char('/') if self.modal_closed() => {
+                self.execute_panel_command(CommandId::Search)
+            }
             KeyCode::Char('L') if self.diff_truncated.is_some() && self.modal_closed() => {
-                self.load_full_diff()
+                self.execute_panel_command(CommandId::LoadFull)
             }
             KeyCode::Char('x')
                 if self.focus == Focus::Status
                     && self.status_section == StatusSection::Unstaged =>
             {
-                self.open_discard_popup()
+                self.execute_panel_command(CommandId::Discard)
             }
             KeyCode::Char('n') if self.focus == Focus::Graph => {
-                self.open_local_branch_action(GraphAction::Rename)
+                self.execute_panel_command(CommandId::Graph(GraphAction::Rename))
             }
-            KeyCode::Char('d') if self.focus == Focus::Graph => self.open_delete_action(),
+            KeyCode::Char('d') if self.focus == Focus::Graph => {
+                self.execute_panel_command(CommandId::Graph(GraphAction::Delete))
+            }
             KeyCode::Char('p') if self.focus == Focus::Graph && self.selected_current_branch() => {
-                self.open_graph_action(GraphAction::Pull)
+                self.execute_panel_command(CommandId::Graph(GraphAction::Pull))
             }
-            KeyCode::Char('F') if self.focus == Focus::Graph => self.open_remote_action(false),
-            KeyCode::Char('+') if self.focus == Focus::Graph => self.open_remote_action(true),
+            KeyCode::Char('F') if self.focus == Focus::Graph => {
+                self.execute_panel_command(CommandId::Fetch)
+            }
+            KeyCode::Char('+') if self.focus == Focus::Graph => {
+                self.execute_panel_command(CommandId::Push)
+            }
             KeyCode::Esc if self.graph_action == Some(GraphAction::Discard) => {
                 self.graph_action = None;
                 self.graph_action_return_focus = None;
@@ -3941,7 +3840,7 @@ impl App {
                     .is_some_and(|view| view.result_preview)
                     && self.selected_conflict_path().is_some() =>
             {
-                self.confirm_selected_conflict_result();
+                self.execute_panel_command(CommandId::ConfirmConflict);
             }
             KeyCode::Backspace
                 if matches!(
@@ -3980,7 +3879,7 @@ impl App {
                 }
             }
             KeyCode::Enter if self.focus == Focus::Graph => {
-                self.open_local_branch_action(GraphAction::CheckoutBranch);
+                self.execute_panel_command(CommandId::Graph(GraphAction::CheckoutBranch));
             }
             KeyCode::F(2) if self.commit_popup => {
                 self.commit_changes();
@@ -4039,25 +3938,13 @@ impl App {
             _ if self.graph_action.is_some() || self.commit_popup || self.abort_rebase_popup => {}
             KeyCode::Char(' ') if self.selected_conflict_path().is_some() => {}
             KeyCode::Char(' ') if self.focus == Focus::Diff => {
-                if self.line_mode {
-                    self.apply_selected_diff_line();
-                } else if self.hunk_mode {
-                    self.apply_selected_diff_hunk();
-                } else {
-                    self.apply_selected_file_changes();
-                }
+                self.execute_panel_command(CommandId::ApplySelection);
             }
             KeyCode::Char(' ') if self.focus == Focus::Status => {
                 if self.historical_commit.is_some() {
                     return false;
                 }
-                if self.line_mode {
-                    self.apply_selected_diff_line();
-                } else if self.hunk_mode {
-                    self.apply_selected_diff_hunk();
-                } else {
-                    self.apply_selected_file_changes();
-                }
+                self.execute_panel_command(CommandId::ApplySelection);
             }
             KeyCode::Char('c')
                 if matches!(self.focus, Focus::Status | Focus::Graph)
@@ -4074,38 +3961,29 @@ impl App {
                     && self.commit_actions_available()
                     && self.rebase_edit.is_none() =>
             {
-                self.open_amend_popup();
+                self.execute_panel_command(CommandId::Amend);
             }
             KeyCode::Char('f')
                 if matches!(self.focus, Focus::Status | Focus::Graph)
                     && self.commit_actions_available()
                     && self.rebase_edit.is_none() =>
             {
-                self.graph_visible = true;
-                self.maximized = false;
-                self.pending_fixup = true;
-                self.fixup_origin = self.selected_graph;
-                self.focus = Focus::Graph;
+                self.execute_panel_command(CommandId::Fixup);
             }
             KeyCode::Char('v') if !self.line_mode => {
-                self.diff_mode = match self.diff_mode {
-                    DiffMode::Unified => DiffMode::SideBySide,
-                    DiffMode::SideBySide => DiffMode::Unified,
-                };
-                self.diff_scroll = 0;
-                self.diff_scroll_x = 0;
+                self.execute_panel_command(CommandId::DiffMode);
             }
             KeyCode::Char('h')
                 if matches!(self.focus, Focus::Status | Focus::Diff)
                     && self.three_way_view.is_none() =>
             {
-                self.toggle_hunk_mode();
+                self.execute_panel_command(CommandId::HunkMode);
             }
             KeyCode::Char('l')
                 if matches!(self.focus, Focus::Status | Focus::Diff)
                     && self.three_way_view.is_none() =>
             {
-                self.toggle_line_mode();
+                self.execute_panel_command(CommandId::LineMode);
             }
             KeyCode::Char('h') | KeyCode::Left
                 if self.focus == Focus::Diff && self.three_way_view.is_some() =>
@@ -4118,30 +3996,8 @@ impl App {
                 if self.focus == Focus::Diff && self.three_way_view.is_some() =>
             {
                 if let Some(view) = &mut self.three_way_view {
-                    let longest = view
-                        .rows
-                        .iter()
-                        .flat_map(|row| {
-                            [&row.base, &row.ours, &row.theirs]
-                                .into_iter()
-                                .filter_map(|cell| {
-                                    cell.as_ref().map(|cell| cell.text.chars().count())
-                                })
-                        })
-                        .chain(view.ours_diff.iter().map(|line| line.text.chars().count()))
-                        .chain(
-                            view.theirs_diff
-                                .iter()
-                                .map(|line| line.text.chars().count()),
-                        )
-                        .chain(
-                            view.result_diff
-                                .iter()
-                                .map(|line| line.text.chars().count()),
-                        )
-                        .max()
-                        .unwrap_or(0);
-                    view.scroll_x = (view.scroll_x + 4).min(longest);
+                    view.scroll_x = view.scroll_x.saturating_add(4);
+                    view.clamp_scroll();
                 }
             }
             KeyCode::Char('j') | KeyCode::Down if self.focus == Focus::Status => {
@@ -4170,24 +4026,14 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down if self.focus == Focus::Diff => {
                 if let Some(view) = &mut self.three_way_view {
-                    let content_rows = view
-                        .rows
-                        .len()
-                        .max(view.ours_diff.len())
-                        .max(view.theirs_diff.len())
-                        .max(if view.result_preview {
-                            view.result_diff.len()
-                        } else {
-                            0
-                        });
-                    view.scroll_y = (view.scroll_y + 1).min(content_rows.saturating_sub(1));
+                    view.scroll_by(1);
                 } else {
                     self.diff_scroll = self.diff_scroll.saturating_add(1);
                 }
             }
             KeyCode::Char('k') | KeyCode::Up if self.focus == Focus::Diff => {
                 if let Some(view) = &mut self.three_way_view {
-                    view.scroll_y = view.scroll_y.saturating_sub(1);
+                    view.scroll_by(-1);
                 } else {
                     self.diff_scroll = self.diff_scroll.saturating_sub(1);
                 }
@@ -4206,7 +4052,9 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.scroll_y = self.scroll_y.saturating_add(1),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_y = self.scroll_y.saturating_sub(1),
-            KeyCode::Char('z') if self.modal_closed() => self.maximized = !self.maximized,
+            KeyCode::Char('z') if self.modal_closed() => {
+                self.execute_panel_command(CommandId::Maximize)
+            }
             KeyCode::Char('g') => {
                 self.maximized = false;
                 self.graph_visible = !self.graph_visible;
@@ -4367,11 +4215,7 @@ impl App {
         let position = Position { x, y };
         if self.diff_area.contains(position) {
             if let Some(view) = &mut self.three_way_view {
-                if delta < 0 {
-                    view.scroll_y = view.scroll_y.saturating_sub(1);
-                } else {
-                    view.scroll_y = (view.scroll_y + 1).min(view.rows.len().saturating_sub(1));
-                }
+                view.scroll_by(delta as isize);
             } else if delta < 0 {
                 self.diff_scroll = self.diff_scroll.saturating_sub(1);
             } else {
@@ -4405,6 +4249,13 @@ mod presentation;
 
 #[path = "app/watch.rs"]
 mod watch;
+
+#[path = "app/conflict.rs"]
+mod conflict;
+
+#[path = "app/commands.rs"]
+mod commands;
+use commands::{CommandId, CommandPickerState};
 
 /// Query the terminal background and ANSI palette. The palette lets dimmed
 /// graph colors retain the user's theme hue while using a darker RGB shade.

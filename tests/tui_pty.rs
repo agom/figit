@@ -1606,13 +1606,13 @@ fn rebase_onto_popup_rewrites_the_current_branch() {
 
     // Pick the main tip commit as the new base via search.
     tui.send(b"/");
-    tui.wait_for("Search /");
+    tui.wait_for("Search: ");
     tui.send(b"tip commit");
     tui.send(b"\r");
     tui.wait_for("1 match");
     tui.send(b"\r");
     tui.send(b"\x1b");
-    tui.wait_until_hidden("Search /");
+    tui.wait_until_hidden("Search: ");
 
     tui.send(b"R");
     tui.wait_for("Rebase onto");
@@ -1707,6 +1707,16 @@ fn search_finds_commit_titles_and_descriptions() {
             "--quiet",
             "--allow-empty",
             "-m",
+            "between the matches",
+        ],
+    );
+    git_ok(
+        repository.path(),
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
             "second needle commit",
         ],
     );
@@ -1721,11 +1731,11 @@ fn search_finds_commit_titles_and_descriptions() {
         ],
     );
     let mut tui = Tui::launch(repository.path());
-    tui.wait_for("7 commits");
+    tui.wait_for("8 commits");
 
     // A phrase that only appears in one commit's description body.
     tui.send(b"/");
-    tui.wait_for("Search /");
+    tui.wait_for("Search: ");
     tui.send(b"secret description phrase");
     tui.send(b"\r");
     tui.wait_for("1 match · 1/1");
@@ -1735,14 +1745,22 @@ fn search_finds_commit_titles_and_descriptions() {
 
     // A case-insensitive title-only query with two matches.
     tui.send(b"/");
-    tui.wait_for("Search /");
+    tui.wait_for("Search: ");
     tui.send(b"NEEDLE");
     tui.send(b"\r");
     tui.wait_for("2 matches · 1/2");
+    tui.wait_for_selected_text("second needle commit");
     tui.send(b"\x1b[B");
     tui.wait_for("2 matches · 2/2");
+    tui.wait_for_selected_text("first commit");
+    tui.send(b"\x1b[B");
+    tui.wait_for("2 matches · 1/2");
+    tui.wait_for_selected_text("second needle commit");
+    tui.send(b"\x1b[A");
+    tui.wait_for("2 matches · 2/2");
+    tui.wait_for_selected_text("first commit");
     tui.send(b"\x1b");
-    tui.wait_until_hidden("Search /");
+    tui.wait_until_hidden("Search: ");
     tui.quit();
 }
 
@@ -2018,7 +2036,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
     tui.wait_for("Ours");
     tui.wait_for("Theirs");
     tui.wait_for("Result");
-    tui.wait_for("o/t/b choose");
+    tui.wait_for("o/t preview conflict");
     let expanded = tui.contents();
     assert!(
         expanded.contains("Graph"),
@@ -2041,19 +2059,19 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
         "missing result panel:\n{expanded}"
     );
     assert!(
-        expanded.contains("Base → Ours"),
-        "Ours should show its diff against Base:\n{expanded}"
+        !expanded.contains("Base → Ours"),
+        "Ours should show its source version without a nested base diff:\n{expanded}"
     );
     assert!(
-        expanded.contains("Base → Theirs"),
-        "Theirs should show its diff against Base:\n{expanded}"
+        !expanded.contains("Base → Theirs"),
+        "Theirs should show its source version without a nested base diff:\n{expanded}"
     );
     assert!(
-        expanded.contains("-base") && expanded.contains("+ours") && expanded.contains("+theirs"),
-        "side panes should render their base-relative changes:\n{expanded}"
+        expanded.contains("ours") && expanded.contains("theirs") && !expanded.contains("-base"),
+        "side panes should render clean source versions:\n{expanded}"
     );
     assert!(
-        expanded.contains("o/t/b choose"),
+        expanded.contains("o/t preview conflict"),
         "side-choice hints belong in the merge panel:\n{expanded}"
     );
     assert!(
@@ -2095,13 +2113,10 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
         result_header > side_header,
         "result pane should be below the side panes:\n{expanded}"
     );
-    let resolver_title = expanded
-        .lines()
-        .find(|line| line.contains("Three-way merge — file.txt"))
-        .expect("resolver title row");
+    let result_border = expanded.lines().nth(result_header).unwrap();
     assert!(
-        resolver_title.starts_with('┌') && resolver_title.ends_with('┐'),
-        "resolver should span the terminal width:\n{resolver_title}"
+        result_border.starts_with('┌') && result_border.ends_with('┐'),
+        "result should span the terminal width: {result_border}"
     );
     let base_id = git_ok(repository.path(), &["merge-base", "HEAD", "feature"]);
     let base_short = git_ok(repository.path(), &["rev-parse", "--short=7", &base_id]);
@@ -2140,19 +2155,19 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
     // In a merge, Git's --theirs is the incoming feature-branch version. The
     // choice previews in place; Enter confirms and stages it.
     tui.send(b"t");
-    tui.wait_for("Result vs Base — Theirs");
+    tui.wait_for("Result — Preview Theirs");
     tui.wait_for("Staged (0)");
     let preview = tui.contents();
     assert!(
-        preview.contains("Result vs Base — Theirs"),
+        preview.contains("Result — Preview Theirs"),
         "selected side should be shown in the pane title:\n{preview}"
     );
     assert!(
-        preview.contains("-base"),
-        "result should diff against Base:\n{preview}"
+        !preview.contains("-base"),
+        "result should keep the aligned file view instead of switching to a diff:\n{preview}"
     );
     assert!(
-        preview.contains("+theirs"),
+        preview.contains("theirs"),
         "chosen side should appear in Result:\n{preview}"
     );
     assert!(
@@ -2203,7 +2218,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
             .lines()
             .enumerate()
             .skip(side_header + 1)
-            .find(|(_, line)| line.contains("+theirs"))
+            .find(|(_, line)| line.contains("theirs"))
             .map(|(row, _)| row)
             .expect("selected Theirs pane row");
         let column = preview
@@ -2232,36 +2247,25 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
 
         let result_header = preview
             .lines()
-            .position(|line| line.contains("Result vs Base — Theirs"))
+            .position(|line| line.contains("Result — Preview Theirs"))
             .unwrap();
-        for (needle, expected) in [("-base", "red"), ("+theirs", "yellow")] {
-            let (row, line) = preview
-                .lines()
-                .enumerate()
-                .skip(result_header + 1)
-                .find(|(_, line)| line.contains(needle))
-                .expect("base-relative result line");
-            let column = terminal_columns(&line[..line.find(needle).unwrap()]);
-            let color = screen
-                .screen()
-                .cell(row as u16, column as u16)
-                .unwrap()
-                .fgcolor();
-            let matches_expected = match expected {
-                "red" => {
-                    matches!(color, vt100::Color::Idx(9))
-                        || matches!(color, vt100::Color::Rgb(red, green, blue) if red > green && red > blue)
-                }
-                _ => {
-                    matches!(color, vt100::Color::Idx(11))
-                        || matches!(color, vt100::Color::Rgb(red, green, blue) if red > blue && green > blue)
-                }
-            };
-            assert!(
-                matches_expected,
-                "{needle} should be {expected}, got {color:?}"
-            );
-        }
+        let (row, line) = preview
+            .lines()
+            .enumerate()
+            .skip(result_header + 1)
+            .find(|(_, line)| line.contains("theirs"))
+            .expect("aligned result preview line");
+        let column = terminal_columns(&line[..line.find("theirs").unwrap()]);
+        let color = screen
+            .screen()
+            .cell(row as u16, column as u16)
+            .unwrap()
+            .fgcolor();
+        assert!(
+            matches!(color, vt100::Color::Idx(11))
+                || matches!(color, vt100::Color::Rgb(red, green, blue) if red > blue && green > blue),
+            "result should retain the Theirs color, got {color:?}"
+        );
     }
     assert!(git_ok(repository.path(), &["status", "--porcelain"]).contains("UU file.txt"));
     tui.send(b"\r");
@@ -2274,6 +2278,66 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
         tui.contents()
     );
     git_ok(repository.path(), &["merge", "--abort"]);
+    tui.quit();
+}
+
+#[test]
+fn conflict_resolver_jumps_to_distant_hunks_and_preserves_preview_safety() {
+    let repository = TempDir::new().unwrap();
+    git_ok(repository.path(), &["init", "-q", "-b", "main"]);
+    configure_user(repository.path());
+    let base = (0..400)
+        .map(|index| format!("let value_{index} = {index};\n"))
+        .collect::<String>();
+    std::fs::write(repository.path().join("large.rs"), &base).unwrap();
+    git_ok(repository.path(), &["add", "."]);
+    git_ok(repository.path(), &["commit", "-qm", "base"]);
+    git_ok(repository.path(), &["branch", "feature"]);
+    let side = |name: &str| {
+        base.replace("let value_80 = 80;\n", &format!("{name} at 80\n"))
+            .replace("let value_320 = 320;\n", &format!("{name} at 320\n"))
+    };
+    std::fs::write(repository.path().join("large.rs"), side("ours")).unwrap();
+    git_ok(repository.path(), &["commit", "-qam", "ours"]);
+    git_ok(repository.path(), &["checkout", "-q", "feature"]);
+    std::fs::write(repository.path().join("large.rs"), side("theirs")).unwrap();
+    git_ok(repository.path(), &["commit", "-qam", "theirs"]);
+    git_ok(repository.path(), &["checkout", "-q", "main"]);
+    assert!(!git(repository.path(), &["merge", "feature"])
+        .status
+        .success());
+    let original = std::fs::read(repository.path().join("large.rs")).unwrap();
+    let mut tui = Tui::launch_sized(repository.path(), None, &[], 80, 24);
+    tui.wait_for("Hunk 1/2");
+    tui.wait_for("ours at 80");
+    tui.send(b"]");
+    tui.wait_for("Hunk 2/2");
+    tui.wait_for("ours at 320");
+    tui.wait_for("theirs at 320");
+    tui.send(b"t");
+    tui.wait_for("Result — Preview Theirs");
+    assert_eq!(
+        std::fs::read(repository.path().join("large.rs")).unwrap(),
+        original
+    );
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Result — Preview");
+    tui.wait_for("Hunk 2/2");
+    tui.wait_for("ours at 320");
+    tui.send(b"t\r");
+    tui.wait_for("Hunk 1/1");
+    tui.wait_for("ours at 80");
+    let partial = std::fs::read_to_string(repository.path().join("large.rs")).unwrap();
+    assert_eq!(partial.matches("<<<<<<<").count(), 1);
+    assert!(partial.contains("theirs at 320"));
+    assert!(!partial.contains("ours at 320"));
+    tui.send(b"o\r");
+    tui.wait_until_hidden("Three-way merge");
+    tui.wait_for("Staged (1)");
+    let resolved = std::fs::read_to_string(repository.path().join("large.rs")).unwrap();
+    assert!(resolved.contains("ours at 80"));
+    assert!(resolved.contains("theirs at 320"));
+    assert!(!resolved.contains("<<<<<<<"));
     tui.quit();
 }
 
@@ -2292,9 +2356,9 @@ fn conflict_resolver_can_open_the_external_editor() {
     tui.wait_for("Three-way merge — file.txt");
     // A pending side preview must not overwrite the editor's saved result.
     tui.send(b"t");
-    tui.wait_for("Result vs Base — Theirs");
+    tui.wait_for("Result — Preview Theirs");
     tui.send(b"e");
-    tui.wait_for("Result vs Base — Edited");
+    tui.wait_for("Result — Preview Edited");
     tui.wait_for("Staged (0)");
     tui.send(b"\r");
     tui.wait_for("Staged (1)");
@@ -2316,8 +2380,13 @@ fn graph_selection_keeps_the_active_conflict_resolver_visible() {
     // Move focus to the Graph and select a commit, as a graph click would.
     tui.send(b"\t\t\x1b[B");
     tui.wait_for("Three-way merge — file.txt");
-    tui.send(b"t");
-    tui.wait_for("Result vs Base — Theirs");
+    // Conflict actions belong to the resolver, rather than overriding graph
+    // commands while the graph has focus.
+    tui.wait_for_title_focus("Graph");
+    tui.send(b"\t");
+    tui.wait_for("o/t preview conflict");
+    tui.send(b":previewtheirs\r");
+    tui.wait_for("Result — Preview Theirs");
     let screen = tui.contents();
     assert!(screen.contains("Graph"));
     assert!(
@@ -2344,7 +2413,7 @@ fn conflict_result_confirmation_advances_to_the_next_file() {
     assert!(tui.contents().contains("Unstaged (2)"));
 
     tui.send(b"t");
-    tui.wait_for("Result vs Base — Theirs");
+    tui.wait_for("Result — Preview Theirs");
     assert!(tui.contents().contains("Unstaged (2)"));
     assert!(tui.contents().contains("Staged (0)"));
     tui.send(b"\r");
@@ -2365,7 +2434,7 @@ fn conflict_result_confirmation_advances_to_the_next_file() {
     );
 
     tui.send(b"o");
-    tui.wait_for("Result vs Base — Ours");
+    tui.wait_for("Result — Preview Ours");
     assert!(tui.contents().contains("Three-way merge — other.txt"));
     tui.send(b"\r");
     tui.wait_until_hidden("Three-way merge — other.txt");
@@ -2392,7 +2461,7 @@ fn conflict_hunks_can_be_chosen_and_confirmed_individually() {
     tui.send(b"]");
     tui.wait_for("Hunk 2/2");
     tui.send(b"o");
-    tui.wait_for("Result vs Base — Ours");
+    tui.wait_for("Result — Preview Ours");
     let second_preview = tui.contents();
     assert!(second_preview.contains("Hunk 2/2"));
     assert_eq!(
@@ -2428,7 +2497,7 @@ fn conflict_hunks_can_be_chosen_and_confirmed_individually() {
         after_first
     );
     tui.send(b"t");
-    tui.wait_for("Result vs Base — Theirs");
+    tui.wait_for("Result — Preview Theirs");
     tui.send(b"\r");
     tui.wait_for("Staged (1)");
     tui.wait_until_hidden("Three-way merge — file.txt");
@@ -2552,7 +2621,7 @@ fn interactive_rebase_conflicts_can_be_resolved_and_continued() {
         assert!(contents.contains(">>>>>>>"));
     }
     tui.send(b"t");
-    tui.wait_for("Result vs Base — Theirs");
+    tui.wait_for("Result — Preview Theirs");
     tui.wait_for("Staged (0)");
     tui.send(b"\r");
     tui.wait_for("Staged (1)");
@@ -2563,7 +2632,7 @@ fn interactive_rebase_conflicts_can_be_resolved_and_continued() {
     tui.wait_until_hidden("Rebase error");
     tui.wait_for("Three-way merge — file.txt");
     tui.send(b"t");
-    tui.wait_for("Result vs Base — Theirs");
+    tui.wait_for("Result — Preview Theirs");
     tui.send(b"\r");
     tui.wait_for("Staged (2)");
     tui.send(b"\x03");
@@ -2693,6 +2762,56 @@ fn delete_popup_can_target_the_tag_and_leave_the_branch() {
 }
 
 #[test]
+fn command_picker_runs_panel_actions_and_preserves_confirmations() {
+    let repository = common::review_fixture("content");
+    let original = std::fs::read(repository.path().join("file.txt")).unwrap();
+    let head = git_ok(repository.path(), &["rev-parse", "HEAD"]);
+    let mut tui = Tui::launch_sized(repository.path(), None, &[], 120, 40);
+    tui.wait_for("file.txt");
+    tui.wait_for(": Commands");
+    tui.send(b":fetch");
+    tui.wait_for("Commands — Unstaged");
+    tui.wait_for("No matching commands");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Commands —");
+    tui.send(b":stgsel");
+    tui.wait_for("Stage selected files");
+    tui.send(b"\r");
+    tui.wait_until_hidden("Commands —");
+    tui.wait_for("Staged (1)");
+    tui.wait_for("Unstaged (0)");
+    assert!(!git_ok(repository.path(), &["diff", "--cached"]).is_empty());
+    assert_eq!(
+        std::fs::read(repository.path().join("file.txt")).unwrap(),
+        original
+    );
+    tui.send(b":unstgsel");
+    tui.wait_for("Commands — Staged");
+    tui.wait_for("Unstage selected files");
+    tui.send(b"\r");
+    tui.wait_for("Unstaged (1)");
+    tui.wait_for("Staged (0)");
+    tui.send(b"\t\x1b[B");
+    tui.wait_for_title_focus("Graph");
+    tui.wait_for("p pull");
+    tui.send(b":reset\r");
+    tui.wait_for("Reset");
+    tui.wait_until_hidden("Commands —");
+    assert_eq!(git_ok(repository.path(), &["rev-parse", "HEAD"]), head);
+    tui.send(b"\x1b");
+    tui.wait_for_title_focus("Graph");
+    tui.send(b":");
+    tui.wait_for("Commands — Graph");
+    if let Ok(path) = std::env::var("FIGIT_COMMAND_PICKER_PREVIEW") {
+        let parser = tui.screen.lock().expect("screen lock");
+        std::fs::write(path, terminal_svg(&parser, 120, 40)).unwrap();
+    }
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Commands —");
+    tui.quit();
+}
+
+#[test]
 fn focused_panel_legends_toggle_and_follow_keyboard_focus() {
     let repository = init_hunk_staging_repository();
     let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);
@@ -2733,11 +2852,11 @@ fn focused_panel_legends_toggle_and_follow_keyboard_focus() {
     // With no modal input, H remains available on every panel. In the
     // search field it must be inserted as text rather than toggling legends.
     tui.send(b"/");
-    tui.wait_for("Search /");
+    tui.wait_for("Search: ");
     tui.send(b"H");
-    tui.wait_for("Search /H");
+    tui.wait_for("Search: H");
     tui.send(b"\x1b");
-    tui.wait_until_hidden("Search /");
+    tui.wait_until_hidden("Search: ");
     tui.wait_for("/ search");
     if let Ok(path) = std::env::var("FIGIT_PANEL_HINT_PREVIEW") {
         tui.send(b"\x1b[Z");
@@ -3063,7 +3182,7 @@ fn generate_readme_screenshots() {
     let repository = init_conflict_repository();
     let tui = launch_themed(repository.path());
     tui.wait_for("Three-way merge — file.txt");
-    tui.wait_for("Base → Ours");
+    tui.wait_for("Ours");
     capture_render(&tui, "assets/screenshot-conflict.png");
     drop(tui);
 
@@ -3353,7 +3472,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
             tui.wait_for("Three-way merge");
             tui.send(b"g");
             tui.wait_until_hidden("Local changes");
-            tui.wait_for("Base → Ours");
+            tui.wait_for("Ours");
             capture(&tui, "conflict");
             tui.quit();
         }
