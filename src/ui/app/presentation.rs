@@ -220,122 +220,81 @@ impl App {
         if !self.panel_hints_visible || !self.modal_closed() || self.loading {
             return Vec::new();
         }
+        use CommandId::*;
+        let available = self.panel_commands();
         let mut actions = Vec::new();
-        let has_hunks = !self.hunk_header_indices.is_empty();
-        let has_changes = self
-            .diff_lines
-            .iter()
-            .any(|line| matches!(line.kind, DiffKind::Added | DiffKind::Removed));
-        let selected_file = self.status.get(self.selected_status).filter(|_| {
-            self.section_indices(self.status_section)
-                .contains(&self.selected_status)
-        });
-        let conflict =
-            self.three_way_view.is_some() || selected_file.is_some_and(StatusEntry::is_conflict);
+        let mut add = |id, key: Option<&'static str>, label| {
+            if let Some(command) = available.iter().find(|command| command.id == id) {
+                actions.push((key.unwrap_or(command.key), label));
+            }
+        };
         match self.focus {
             Focus::Graph => {
-                if self.pending_fixup && self.selected_commit_id().is_some() {
-                    actions.push(("Enter", "fixup"));
+                add(ConfirmFixup, None, "fixup");
+                add(Fetch, None, "fetch");
+                add(Graph(GraphAction::Pull), None, "pull");
+                let checkout = if available
+                    .iter()
+                    .any(|command| command.id == Graph(GraphAction::CheckoutBranch))
+                {
+                    Graph(GraphAction::CheckoutBranch)
                 } else {
-                    let available = self.panel_commands();
-                    for (id, label) in [
-                        (CommandId::Fetch, "fetch"),
-                        (CommandId::Graph(GraphAction::Pull), "pull"),
-                        (CommandId::Graph(GraphAction::CheckoutBranch), "checkout"),
-                        (CommandId::Search, "search"),
-                    ] {
-                        let command =
-                            available
-                                .iter()
-                                .find(|command| command.id == id)
-                                .or_else(|| {
-                                    (id == CommandId::Graph(GraphAction::CheckoutBranch))
-                                        .then(|| {
-                                            available.iter().find(|command| {
-                                                command.id
-                                                    == CommandId::Graph(GraphAction::Checkout)
-                                            })
-                                        })
-                                        .flatten()
-                                });
-                        if let Some(command) = command {
-                            actions.push((command.key, label));
-                        }
-                    }
-                }
+                    Graph(GraphAction::Checkout)
+                };
+                add(checkout, None, "checkout");
+                add(Search, None, "search");
             }
-            Focus::Details => {}
-            Focus::Status if self.historical_commit.is_some() => {}
-            Focus::Status if conflict => {
-                if self.remote_operation.is_none() {
-                    actions.extend([
-                        ("o/t", "preview side"),
-                        ("b", "restore whole file"),
-                        ("e", "editor"),
-                    ]);
-                }
+            Focus::Status
+                if available
+                    .iter()
+                    .any(|command| command.id == Conflict(ConflictSide::Ours)) =>
+            {
+                add(Conflict(ConflictSide::Ours), Some("o/t"), "preview side");
+                add(Conflict(ConflictSide::Base), None, "restore whole file");
+                add(Editor, None, "editor");
             }
-            Focus::Status if self.remote_operation.is_none() => {
-                if selected_file.is_some() {
-                    let staged = self.status_section == StatusSection::Staged;
-                    // Space applies the partial selection while hunk/line mode
-                    // is retained. F always applies whole files in this case.
-                    let key = if self.hunk_mode || self.line_mode {
-                        "F"
-                    } else {
-                        "Space"
-                    };
-                    actions.push((key, if staged { "unstage file" } else { "stage file" }));
-                    if staged && self.commit_actions_available() {
-                        actions.push(("c", "commit"));
-                    } else if !staged && !self.selected_statuses.is_empty() {
-                        actions.push(("x", "discard file"));
-                    }
-                    if has_hunks {
-                        actions.push(("h", "hunks"));
-                    }
+            Focus::Status => {
+                let staged = self.status_section == StatusSection::Staged;
+                let whole = if self.hunk_mode || self.line_mode {
+                    ApplyFile
+                } else {
+                    ApplySelection
+                };
+                add(
+                    whole,
+                    None,
+                    if staged { "unstage file" } else { "stage file" },
+                );
+                if staged {
+                    add(Commit, None, "commit");
+                } else {
+                    add(Discard, None, "discard file");
                 }
+                add(HunkMode, None, "hunks");
             }
-            Focus::Diff if !conflict && self.diff_path.is_some() && !self.details_loading => {
-                if self.remote_operation.is_none() {
-                    if self.diff_truncated.is_some() {
-                        actions.push(("L", "load full diff"));
-                    }
-                    if self.historical_commit.is_none()
-                        && selected_file.is_some()
-                        && ((!self.hunk_mode && !self.line_mode)
-                            || (self.hunk_mode && has_hunks)
-                            || (self.line_mode && self.selected_diff_line.is_some()))
-                    {
-                        let staged = self.diff_target == DiffTarget::Index;
-                        let scope = match (staged, self.hunk_mode, self.line_mode) {
-                            (true, _, true) => "unstage line",
-                            (false, _, true) => "stage line",
-                            (true, true, _) => "unstage hunk",
-                            (false, true, _) => "stage hunk",
-                            (true, _, _) => "unstage file",
-                            _ => "stage file",
-                        };
-                        actions.push(("Space", scope));
-                    }
-                }
-                if has_hunks {
-                    actions.push(("[/]", "hunk"));
-                }
-                if self.remote_operation.is_none() {
-                    if self.historical_commit.is_some() {
-                        if !self.line_mode {
-                            actions.push(("v", "view"));
-                        }
-                    } else if self.hunk_mode && has_changes {
-                        actions.push(("l", "lines"));
-                    } else if self.line_mode {
-                        actions.push(("f", "file mode"));
-                    } else if has_hunks {
-                        actions.push(("h", "hunks"));
-                    } else if !self.line_mode {
-                        actions.push(("v", "view"));
-                    }
+            Focus::Diff if self.three_way_view.is_none() => {
+                add(LoadFull, None, "load full diff");
+                let staged = self.diff_target == DiffTarget::Index;
+                let label = match (staged, self.hunk_mode, self.line_mode) {
+                    (true, _, true) => "unstage line",
+                    (false, _, true) => "stage line",
+                    (true, true, _) => "unstage hunk",
+                    (false, true, _) => "stage hunk",
+                    (true, _, _) => "unstage file",
+                    _ => "stage file",
+                };
+                add(ApplySelection, None, label);
+                add(PreviousHunk, Some("[/]"), "hunk");
+                if self.historical_commit.is_some() {
+                    add(DiffMode, None, "view");
+                } else if self.line_mode {
+                    add(FileMode, None, "file mode");
+                } else if self.hunk_mode {
+                    add(LineMode, None, "lines");
+                } else if available.iter().any(|command| command.id == HunkMode) {
+                    add(HunkMode, None, "hunks");
+                } else {
+                    add(DiffMode, None, "view");
                 }
             }
             _ => {}
@@ -600,4 +559,197 @@ fn pill_rgb(color: Color, palette: &TerminalAnsiPalette) -> [u8; 3] {
         }
         _ => [8 + (index - 232) * 10; 3],
     }
+}
+
+pub(super) const PALETTE: [Color; 7] = [
+    Color::LightBlue,
+    Color::LightGreen,
+    Color::LightYellow,
+    Color::LightMagenta,
+    Color::LightCyan,
+    Color::LightRed,
+    Color::White,
+];
+
+/// Glyph shown before a local branch that is also tracked on a remote.
+/// Nerd Font glyphs stay monochrome and use the pill's text color;
+/// Unicode arrow symbols can still fall back to emoji despite text selectors.
+pub(super) const REMOTE_GLYPH: &str = "\u{f07d}"; // fa-arrows_v
+
+pub(super) const AHEAD_GLYPH: &str = "\u{eaa1}"; // cod-arrow_up
+
+pub(super) const BEHIND_GLYPH: &str = "\u{ea9a}"; // cod-arrow_down
+
+/// Nerd Font Material Design tag icon.
+pub(super) const TAG_GLYPH: &str = "\u{f04f9}";
+
+/// Rounded Powerline caps for branch and tag pills.
+pub(super) const PILL_LEFT: char = '\u{e0b6}';
+
+pub(super) const PILL_RIGHT: char = '\u{e0b4}';
+
+pub(super) const HEAD_BRANCH_MARKER: &str = "✓";
+
+/// Howard Hinnant's civil-from-days algorithm (no chrono dependency).
+pub(super) fn fmt_date(seconds: i64, offset_seconds: i32) -> String {
+    let shifted = seconds + i64::from(offset_seconds);
+    let z = shifted.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+pub(super) fn status_glyph(code: char) -> (char, Color) {
+    match code {
+        'A' => ('✚', Color::Green),
+        'D' => ('✖', Color::Red),
+        'M' => ('●', Color::Yellow),
+        'R' => ('➜', Color::Magenta),
+        'C' => ('▣', Color::Magenta),
+        'T' => ('⇄', Color::Cyan),
+        '?' => ('?', Color::Yellow),
+        'U' => ('⚠', Color::Red),
+        _ => ('•', Color::Yellow),
+    }
+}
+
+pub(super) fn darker_color(color: Color, palette: &TerminalAnsiPalette) -> Color {
+    let index = match color {
+        Color::Black => Some(0),
+        Color::Red | Color::LightRed => Some(1),
+        Color::Green | Color::LightGreen => Some(2),
+        Color::Yellow | Color::LightYellow => Some(3),
+        Color::Blue | Color::LightBlue => Some(4),
+        Color::Magenta | Color::LightMagenta => Some(5),
+        Color::Cyan | Color::LightCyan => Some(6),
+        Color::Gray | Color::White => Some(7),
+        _ => None,
+    };
+    let theme_index = match color {
+        Color::LightRed => Some(9),
+        Color::LightGreen => Some(10),
+        Color::LightYellow => Some(11),
+        Color::LightBlue => Some(12),
+        Color::LightMagenta => Some(13),
+        Color::LightCyan => Some(14),
+        Color::White => Some(15),
+        _ => index,
+    };
+    let themed = theme_index.and_then(|index| palette[index]);
+    match themed {
+        Some(Color::Rgb(r, g, b)) => Color::Rgb(r / 2, g / 2, b / 2),
+        Some(color) => color,
+        None => match color {
+            Color::LightRed => Color::Red,
+            Color::LightGreen => Color::Green,
+            Color::LightYellow => Color::Yellow,
+            Color::LightBlue => Color::Blue,
+            Color::LightCyan => Color::Cyan,
+            Color::LightMagenta => Color::Magenta,
+            Color::White => Color::Gray,
+            Color::Rgb(r, g, b) => Color::Rgb(r / 2, g / 2, b / 2),
+            color => color,
+        },
+    }
+}
+
+pub(super) fn conflict_side_border_style(
+    color: Color,
+    selected: bool,
+    palette: &TerminalAnsiPalette,
+) -> Style {
+    let color = if selected {
+        color
+    } else {
+        darker_color(color, palette)
+    };
+    let style = Style::default().fg(color);
+    if selected {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
+pub(super) fn dim_graph_line(
+    line: &mut Line<'_>,
+    lane_start: usize,
+    lane_columns: usize,
+    terminal_bg: Option<Color>,
+    terminal_palette: &TerminalAnsiPalette,
+) {
+    for (index, span) in line.spans.iter_mut().enumerate() {
+        if (lane_start..lane_start + lane_columns).contains(&index) {
+            if let Some(foreground) = span.style.fg {
+                span.style = span.style.fg(darker_color(foreground, terminal_palette));
+            }
+        } else if span.style.add_modifier.contains(Modifier::REVERSED) {
+            if let Some(fill) = span.style.fg {
+                let fill = presentation::pill_fill_color(
+                    darker_color(fill, terminal_palette),
+                    terminal_palette,
+                );
+                span.style = span.style.fg(fill).bg(presentation::pill_text_color(
+                    fill,
+                    terminal_bg,
+                    terminal_palette,
+                ));
+            }
+        } else if let Some(background) = span.style.bg {
+            if terminal_bg == Some(background) {
+                if let Some(foreground) = span.style.fg {
+                    span.style = span.style.fg(presentation::pill_fill_color(
+                        darker_color(foreground, terminal_palette),
+                        terminal_palette,
+                    ));
+                }
+            } else {
+                let fill = presentation::pill_fill_color(
+                    darker_color(background, terminal_palette),
+                    terminal_palette,
+                );
+                span.style = span.style.bg(fill).fg(presentation::pill_text_color(
+                    fill,
+                    terminal_bg,
+                    terminal_palette,
+                ));
+            }
+        } else {
+            span.style = span.style.fg(Color::DarkGray);
+        }
+    }
+}
+
+pub(super) fn scrollbar_position(scroll: usize, content: usize, viewport: usize) -> usize {
+    if content == 0 || scroll == 0 {
+        0
+    } else {
+        (scroll + viewport.saturating_sub(1)).min(content.saturating_sub(1))
+    }
+}
+
+pub(super) fn minimal_scrollbar(color: Color) -> Scrollbar<'static> {
+    Scrollbar::default()
+        .orientation(ScrollbarOrientation::VerticalRight)
+        .thumb_symbol("█")
+        .track_symbol(None)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .thumb_style(color)
+}
+
+pub(super) fn border_scrollbar_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x + area.width.saturating_sub(1),
+        area.y + 1,
+        1,
+        area.height.saturating_sub(2),
+    )
 }

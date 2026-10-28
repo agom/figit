@@ -1,8 +1,8 @@
 [package]
 name = "figit"
-version = "0.1.0-alpha.6"
+version = "0.1.0"
 edition = "2021"
-description = "A terminal Git client built around a real commit graph"
+description = "A visual Git workspace for your terminal."
 license = "MIT"
 repository = "https://github.com/agom/figit"
 
@@ -20,6 +20,7 @@ libc = "0.2"
 tempfile = "3"
 notify = "8"
 devicons = "0.6"
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 portable-pty = "0.9"

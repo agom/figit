@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::*;
 
 impl App {
@@ -317,7 +319,7 @@ impl App {
             let last_column = status_area.x + status_area.width.saturating_sub(1);
             let column = status_area
                 .x
-                .saturating_add("Search: ".len() as u16)
+                .saturating_add("Search loaded commits: ".len() as u16)
                 .saturating_add(search.cursor.min(u16::MAX as usize) as u16)
                 .min(last_column);
             f.set_cursor_position(Position {
@@ -325,16 +327,16 @@ impl App {
                 y: status_area.y,
             });
         }
-        if self.rebase_plan.is_some() {
+        if self.rebase_plan.is_some() && self.local_job.is_none() {
             self.render_rebase_plan_popup(f, area);
         }
-        if self.commit_popup {
+        if self.commit_dialog.visible() && self.local_job.is_none() {
             self.render_commit_popup(f, area);
         }
-        if self.graph_action.is_some() {
+        if self.graph_action.is_some() && self.local_job.is_none() {
             self.render_graph_action_popup(f, area);
         }
-        if self.abort_rebase_popup {
+        if self.abort_rebase_popup && self.local_job.is_none() {
             self.render_abort_rebase_popup(f, area);
         }
         if self.stash_popup.is_some() {
@@ -1030,7 +1032,11 @@ impl App {
     }
 
     fn render_commit_popup(&self, f: &mut Frame, area: Rect) {
-        let desired_height = if self.commit_confirm { 8 } else { 14 };
+        let desired_height = if self.commit_dialog.confirming() {
+            8
+        } else {
+            14
+        };
         let popup_height = area.height.min(desired_height);
         let popup = Rect::new(
             area.width / 5,
@@ -1038,7 +1044,7 @@ impl App {
             area.width * 3 / 5,
             popup_height,
         );
-        let mode = match &self.commit_mode {
+        let mode = match &self.commit_dialog.mode {
             CommitMode::Normal => "Commit",
             CommitMode::Amend => "Amend latest",
             CommitMode::Fixup(_) => "Fixup selected commit",
@@ -1065,8 +1071,8 @@ impl App {
             horizontal: 1,
             vertical: 1,
         });
-        if self.commit_confirm {
-            let target = match &self.commit_mode {
+        if self.commit_dialog.confirming() {
+            let target = match &self.commit_dialog.mode {
                 CommitMode::Fixup(target) => target.chars().take(7).collect::<String>(),
                 CommitMode::Edit(target) => target.chars().take(7).collect::<String>(),
                 _ => String::new(),
@@ -1075,7 +1081,7 @@ impl App {
                 Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(inner);
             let commit_style = self.button_style(self.commit_field == CommitField::Commit);
             let cancel_style = self.button_style(self.commit_field == CommitField::Cancel);
-            let prompt = match &self.commit_mode {
+            let prompt = match &self.commit_dialog.mode {
                 CommitMode::Normal => "Create the commit?".to_string(),
                 CommitMode::Amend => "Amend the latest commit?".to_string(),
                 CommitMode::Fixup(_) => format!("Fixup staged changes into {target}?"),
@@ -1162,10 +1168,14 @@ impl App {
             horizontal: 1,
             vertical: 1,
         });
-        let (title_cursor, title_scroll) =
-            single_line_cursor(&self.commit_title, 0, self.commit_title_cursor, title_area);
+        let (title_cursor, title_scroll) = single_line_cursor(
+            &self.commit_dialog.title,
+            0,
+            self.commit_dialog.title_cursor,
+            title_area,
+        );
         f.render_widget(
-            Paragraph::new(self.commit_title.clone())
+            Paragraph::new(self.commit_dialog.title.clone())
                 .style(title_style)
                 .scroll((0, title_scroll))
                 .block(title_block),
@@ -1179,12 +1189,12 @@ impl App {
             vertical: 1,
         });
         let (description_cursor, description_scroll) = wrapped_text_cursor(
-            &self.commit_description,
-            self.commit_description_cursor,
+            &self.commit_dialog.description,
+            self.commit_dialog.description_cursor,
             description_area,
         );
         let description_lines = wrapped_text_lines(
-            &self.commit_description,
+            &self.commit_dialog.description,
             usize::from(description_area.width).max(1),
         );
         f.render_widget(
@@ -1200,7 +1210,7 @@ impl App {
 
         let commit_style = self.button_style(self.commit_field == CommitField::Commit);
         let cancel_style = self.button_style(self.commit_field == CommitField::Cancel);
-        let confirm_label = match self.commit_mode {
+        let confirm_label = match self.commit_dialog.mode {
             CommitMode::Reword(_) => " Rebase ",
             CommitMode::RebaseReplacement => " Replace ",
             CommitMode::PlanReword(_) => " Save message ",
@@ -2265,7 +2275,7 @@ impl App {
         }
         if let Some(search) = &self.search_popup {
             let mut spans = vec![Span::styled(
-                format!("Search: {}", search.query),
+                format!("Search loaded commits: {}", search.query),
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
@@ -2305,6 +2315,16 @@ impl App {
             };
             return Line::from(Span::styled(
                 format!("figit | {branch} | {spinner} {progress}"),
+                Style::default().fg(Color::LightYellow),
+            ));
+        }
+        if let Some(job) = &self.local_job {
+            return Line::from(Span::styled(
+                format!(
+                    "figit | {branch} | {} in progress ({:.1}s)",
+                    job.label,
+                    job.started.elapsed().as_secs_f32()
+                ),
                 Style::default().fg(Color::LightYellow),
             ));
         }
@@ -2424,7 +2444,7 @@ impl App {
             ));
         }
         if self.graph_action.is_some()
-            || self.commit_popup
+            || self.commit_dialog.visible()
             || self.abort_rebase_popup
             || self.rebase_plan.is_some()
             || self.stash_popup.is_some()

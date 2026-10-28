@@ -55,6 +55,18 @@ Two rules keep the module boundaries useful:
 - **`core` stays terminal-free** and serde-serializable, keyed by OID, so the
   client logic stays reusable and the crate stays split-ready.
 
+Within `src/ui/app/`, `diff.rs` owns diff parsing, layout, and syntax-highlighted
+rows; `diff_view.rs` handles loading, caching, and selection. `terminal.rs` owns
+terminal setup/restoration, the event loop, color queries, and suspension for the
+external conflict editor. Shared display-width, wrapping, and editing helpers
+live in `text.rs`. Keep these helpers independent of `App` where possible.
+
+Feature state and handlers live together in `graph.rs`, `rebase.rs`, `remote.rs`,
+`stash.rs`, and `update.rs`. `conflict_model.rs` handles conflict markers and
+source alignment; `conflict.rs` owns resolver state and rendering. Snapshot types,
+loading, and installation belong to `refresh.rs`. `app.rs` contains shared
+application state and constructors.
+
 ## Design guidelines
 
 - **Safety first:** confirm before anything hard to reverse; `Esc` always exits
@@ -126,6 +138,9 @@ checkout (see `fixtures/tui-e2e.md` for how to build one). It rewrites
 `assets/screenshot*.png`.
 
 ## Commits and pull requests
+
+See [the release guide](docs/releasing.md) for isolated installation checks and
+the first stable release checklist.
 
 - Write [Conventional Commits](https://www.conventionalcommits.org/)-style
   messages — `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `perf:`, `chore:`

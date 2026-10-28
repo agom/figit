@@ -78,7 +78,7 @@ impl App {
                 aliases,
             })
         };
-        let busy = self.loading || self.remote_operation.is_some();
+        let busy = self.loading || self.git_busy();
         let historical = self.historical_commit.is_some()
             && !(self.focus == Focus::Diff && self.three_way_view.is_some());
         let file = self.status.get(self.selected_status).filter(|_| {
@@ -118,7 +118,12 @@ impl App {
                             "switch commit|detach",
                         );
                     }
-                    add(Search, "Search commit messages", "/", "find|search history");
+                    add(
+                        Search,
+                        "Search loaded commit messages",
+                        "/",
+                        "find|search history",
+                    );
                     if self.selected_local_branch().is_some() || self.selected_tag().is_some() {
                         add(Push, "Push", "+", "upload|remote");
                     }
@@ -180,7 +185,12 @@ impl App {
                     add(Undo, "Undo from reflog", "u", "restore history");
                 }
             }
-            Focus::Status | Focus::Diff if !busy => {
+            Focus::Status | Focus::Diff
+                if !busy
+                    && !(self.focus == Focus::Diff
+                        && self.three_way_view.is_none()
+                        && (self.details_loading || self.diff_path.is_none())) =>
+            {
                 if conflict && !historical {
                     add(
                         Conflict(ConflictSide::Ours),
@@ -365,6 +375,15 @@ impl App {
             }
             _ => {}
         }
+        if busy
+            && !self.loading
+            && self.focus == Focus::Diff
+            && self.three_way_view.is_none()
+            && hunks
+        {
+            add(PreviousHunk, "Previous hunk", "[", "");
+            add(NextHunk, "Next hunk", "]", "");
+        }
         // z is disabled during loading/remote operations in the key handler.
         if !busy {
             add(
@@ -379,6 +398,37 @@ impl App {
             );
         }
         entries
+    }
+
+    /// The same entries drive the picker, panel legends and keyboard dispatch.
+    pub(super) fn handle_panel_shortcut(&mut self, key: KeyEvent) -> bool {
+        let command = self.panel_commands().into_iter().find(|command| {
+            let control = key.modifiers.contains(KeyModifiers::CONTROL);
+            if key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+            {
+                return false;
+            }
+            match command.key {
+                "Ctrl+C" => control && key.code == KeyCode::Char('c'),
+                "Ctrl+A" => control && key.code == KeyCode::Char('a'),
+                _ if control => false,
+                "Enter" => key.code == KeyCode::Enter,
+                "Esc" => key.code == KeyCode::Esc,
+                "Space" => key.code == KeyCode::Char(' '),
+                value => {
+                    value.chars().count() == 1
+                        && key.code == KeyCode::Char(value.chars().next().unwrap())
+                }
+            }
+        });
+        if let Some(command) = command {
+            self.execute_panel_command(command.id);
+            true
+        } else {
+            false
+        }
     }
 
     pub(super) fn execute_panel_command(&mut self, id: CommandId) {

@@ -1,5 +1,12 @@
+use super::conflict_model::fit_to_cells;
+use super::diff::*;
+use super::diff_view::MAX_RENDERED_DIFF_LINES;
+use super::text::*;
+use super::update::UpdateAvailability;
+use super::watch::is_ignored_watch_path;
 use super::*;
 use crate::core::model::{BranchTracking, Commit, RefKind, RefLabel, StatusEntry};
+use crossterm::event;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -28,7 +35,7 @@ fn search_arrows_skip_unmatched_commits_and_wrap_until_search_is_closed() {
     assert!(app
         .status_line()
         .to_string()
-        .starts_with("Search: matching"));
+        .starts_with("Search loaded commits: matching"));
     assert!(!app.status_line().to_string().contains("Search /"));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.selected_commit_id().as_deref(), Some("m"));
@@ -62,7 +69,7 @@ fn empty_search_results_do_not_fall_through_to_commit_navigation() {
     assert!(app
         .status_line()
         .to_string()
-        .starts_with("Search: no/such/commit"));
+        .starts_with("Search loaded commits: no/such/commit"));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(app.status_line().to_string().contains("0 matches"));
     let selected = app.selected_commit_id();
@@ -231,13 +238,13 @@ fn panel_hints_toggle_is_session_local_and_respects_modal_input() {
     app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::CONTROL));
     assert!(app.panel_hints_visible);
 
-    app.commit_popup = true;
+    app.commit_dialog.set_open(true);
     app.commit_field = CommitField::Title;
     app.handle_key(KeyEvent::from(KeyCode::Char('H')));
-    assert_eq!(app.commit_title, "H");
+    assert_eq!(app.commit_dialog.title, "H");
     assert!(app.panel_hints_visible);
     assert!(app.panel_actions().is_empty());
-    app.commit_popup = false;
+    app.commit_dialog.set_open(false);
     app.help_popup = true;
     app.handle_key(KeyEvent::from(KeyCode::Char('H')));
     assert!(app.panel_hints_visible);
@@ -563,11 +570,11 @@ fn command_picker_is_modal_and_printable_keys_edit_the_query() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(app.command_picker.is_none());
     assert_eq!((app.focus, app.selected_status), (initial_focus, selection));
-    app.commit_popup = true;
+    app.commit_dialog.set_open(true);
     app.commit_field = CommitField::Title;
     app.handle_key(KeyEvent::from(KeyCode::Char(':')));
     assert!(app.command_picker.is_none());
-    assert_eq!(app.commit_title, ":");
+    assert_eq!(app.commit_dialog.title, ":");
 }
 
 #[test]
@@ -626,13 +633,13 @@ fn command_picker_rejects_stale_targets_and_defers_background_refreshes() {
 
     let (_directory, mut app) = review_app("content");
     open_filtered_commands(&mut app, "");
-    app.refresh_deadline = Some(Instant::now());
+    app.refresh.deadline = Some(Instant::now());
     app.poll_repository_refresh();
-    assert!(!app.refresh_in_progress);
-    assert!(app.refresh_deadline.is_some());
+    assert!(!app.refresh.in_progress);
+    assert!(app.refresh.deadline.is_some());
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     app.poll_repository_refresh();
-    assert!(app.refresh_in_progress);
+    assert!(app.refresh.in_progress);
 }
 
 #[test]
@@ -1037,42 +1044,42 @@ fn text_fields_move_the_insertion_cursor_with_arrows() {
     assert_eq!(app.graph_action_input, "branch");
 
     app.graph_action = None;
-    app.commit_popup = true;
+    app.commit_dialog.set_open(true);
     app.commit_field = CommitField::Title;
-    app.commit_title = "abcd".into();
-    app.commit_title_cursor = 2;
+    app.commit_dialog.title = "abcd".into();
+    app.commit_dialog.title_cursor = 2;
     app.handle_key(KeyEvent::from(KeyCode::Right));
     app.handle_key(KeyEvent::from(KeyCode::Char('X')));
-    assert_eq!(app.commit_title, "abcXd");
+    assert_eq!(app.commit_dialog.title, "abcXd");
 
     app.commit_field = CommitField::Description;
-    app.commit_description = "one\ntwo".into();
-    app.commit_description_cursor = app.commit_description.chars().count();
+    app.commit_dialog.description = "one\ntwo".into();
+    app.commit_dialog.description_cursor = app.commit_dialog.description.chars().count();
     app.handle_key(KeyEvent::from(KeyCode::Up));
     app.handle_key(KeyEvent::from(KeyCode::Char('X')));
-    assert_eq!(app.commit_description, "oneX\ntwo");
+    assert_eq!(app.commit_dialog.description, "oneX\ntwo");
 }
 
 #[test]
 fn reword_and_all_name_popups_edit_at_the_arrow_cursor() {
     let mut app = App::new(synthetic_graph(), Vec::new(), None);
     app.handle_key(KeyEvent::from(KeyCode::Char('w')));
-    assert!(matches!(app.commit_mode, CommitMode::Reword(_)));
-    app.commit_title = "message".into();
-    app.commit_title_cursor = 3;
+    assert!(matches!(app.commit_dialog.mode, CommitMode::Reword(_)));
+    app.commit_dialog.title = "message".into();
+    app.commit_dialog.title_cursor = 3;
     app.handle_key(KeyEvent::from(KeyCode::Left));
     app.handle_key(KeyEvent::from(KeyCode::Char('X')));
-    assert_eq!(app.commit_title, "meXssage");
-    assert_eq!(app.commit_title_cursor, 3);
+    assert_eq!(app.commit_dialog.title, "meXssage");
+    assert_eq!(app.commit_dialog.title_cursor, 3);
 
     app.commit_field = CommitField::Description;
-    app.commit_description = "body".into();
-    app.commit_description_cursor = 2;
+    app.commit_dialog.description = "body".into();
+    app.commit_dialog.description_cursor = 2;
     app.handle_key(KeyEvent::from(KeyCode::Right));
     app.handle_key(KeyEvent::from(KeyCode::Char('X')));
-    assert_eq!(app.commit_description, "bodXy");
+    assert_eq!(app.commit_dialog.description, "bodXy");
 
-    app.commit_popup = false;
+    app.commit_dialog.set_open(false);
     app.graph_action = Some(GraphAction::Branch);
     app.commit_field = CommitField::Title;
     for action in [GraphAction::Branch, GraphAction::Tag, GraphAction::Rename] {
@@ -1091,15 +1098,15 @@ fn graph_action_popups_ignore_commit_editor_keys() {
     let mut app = App::new(synthetic_graph(), Vec::new(), None);
     app.graph_action = Some(GraphAction::Fetch);
     app.focus = Focus::Commit;
-    app.commit_title = "keep".into();
-    app.commit_description = "body".into();
+    app.commit_dialog.title = "keep".into();
+    app.commit_dialog.description = "body".into();
     app.commit_field = CommitField::Title;
 
     app.handle_key(KeyEvent::from(KeyCode::Char('z')));
     app.handle_key(KeyEvent::from(KeyCode::Backspace));
     app.handle_key(KeyEvent::from(KeyCode::F(2)));
-    assert_eq!(app.commit_title, "keep");
-    assert_eq!(app.commit_description, "body");
+    assert_eq!(app.commit_dialog.title, "keep");
+    assert_eq!(app.commit_dialog.description, "body");
 }
 
 #[test]
@@ -1184,10 +1191,10 @@ fn reword_opens_editor_for_selected_merge_commit() {
 
     app.handle_key(KeyEvent::from(KeyCode::Char('w')));
 
-    assert!(app.commit_popup);
-    assert_eq!(app.commit_title, "merge");
-    assert_eq!(app.commit_description, "Original body");
-    assert_eq!(app.commit_mode, CommitMode::Reword("m".into()));
+    assert!(app.commit_dialog.visible());
+    assert_eq!(app.commit_dialog.title, "merge");
+    assert_eq!(app.commit_dialog.description, "Original body");
+    assert_eq!(app.commit_dialog.mode, CommitMode::Reword("m".into()));
 }
 
 #[test]
@@ -1195,12 +1202,12 @@ fn edit_shortcut_opens_confirmation_for_selected_merge_commit() {
     let mut app = App::new(synthetic_graph(), Vec::new(), None);
 
     app.handle_key(KeyEvent::from(KeyCode::Char('e')));
-    assert!(app.commit_popup);
-    assert!(app.commit_confirm);
-    assert_eq!(app.commit_mode, CommitMode::Edit("m".into()));
+    assert!(app.commit_dialog.visible());
+    assert!(app.commit_dialog.confirming());
+    assert_eq!(app.commit_dialog.mode, CommitMode::Edit("m".into()));
 
     app.handle_key(KeyEvent::from(KeyCode::Esc));
-    assert!(!app.commit_popup);
+    assert!(!app.commit_dialog.visible());
     assert_eq!(app.focus, Focus::Graph);
 }
 
@@ -2695,17 +2702,17 @@ fn fixup_waits_for_a_new_graph_selection() {
     app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::Graph);
     assert!(app.pending_fixup);
-    assert!(!app.commit_popup);
+    assert!(!app.commit_dialog.visible());
 
     app.select_graph_index(1);
     assert_eq!(app.focus, Focus::Graph);
     assert!(app.pending_fixup);
-    assert!(!app.commit_popup);
+    assert!(!app.commit_dialog.visible());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::Commit);
     assert!(!app.pending_fixup);
-    assert!(app.commit_popup);
-    assert!(matches!(app.commit_mode, CommitMode::Fixup(_)));
+    assert!(app.commit_dialog.visible());
+    assert!(matches!(app.commit_dialog.mode, CommitMode::Fixup(_)));
 }
 
 #[test]
@@ -3150,7 +3157,7 @@ fn modal_wheel_input_cannot_scroll_or_refocus_background_panels() {
     for overlay in 0..5 {
         app.help_popup = overlay == 0;
         app.graph_action = (overlay == 1).then_some(GraphAction::Reset);
-        app.commit_popup = overlay == 2;
+        app.commit_dialog.set_open(overlay == 2);
         app.abort_rebase_popup = overlay == 3;
         app.error_popup = (overlay == 4).then(|| "test error".into());
         for area in [app.diff_area, app.graph_area, app.details_area] {
@@ -3199,7 +3206,7 @@ fn escape_cancels_fixup_and_restores_normal_enter_behavior() {
     app.focus = Focus::Graph;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.graph_action, Some(GraphAction::CheckoutBranch));
-    assert!(!app.commit_popup);
+    assert!(!app.commit_dialog.visible());
 }
 
 #[test]
@@ -3296,20 +3303,20 @@ fn watcher_failure_falls_back_to_polling_external_changes() {
         thread::sleep(Duration::from_millis(5));
     }
     assert!(app.status_line().to_string().contains("polling every 5s"));
-    assert!(!app.refresh_in_progress);
+    assert!(!app.refresh.in_progress);
 
     // Subsequent changes are detected without any filesystem events, but
     // not before the next interval. Staging is an index-only change.
     review_git(directory.path(), &["add", "fallback.txt"]);
     app.poll_repository_refresh();
-    assert!(!app.refresh_in_progress);
+    assert!(!app.refresh.in_progress);
     assert!(!app
         .local_status
         .iter()
         .any(|entry| entry.path == "fallback.txt" && entry.index == 'A'));
     app.watcher_poll_deadline = Some(Instant::now());
     app.poll_repository_refresh();
-    assert!(app.refresh_in_progress);
+    assert!(app.refresh.in_progress);
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         app.poll_repository_refresh();
@@ -3338,21 +3345,21 @@ fn watcher_failure_falls_back_to_polling_external_changes() {
 fn watcher_polling_defers_during_editing_and_does_not_overlap_refreshes() {
     let (_directory, mut app) = review_app("content");
     app.watcher_poll_deadline = Some(Instant::now());
-    app.commit_popup = true;
+    app.commit_dialog.set_open(true);
     app.poll_repository_refresh();
-    assert!(!app.refresh_in_progress);
-    assert!(app.refresh_deadline.is_some());
-    app.commit_popup = false;
-    app.refresh_in_progress = true;
+    assert!(!app.refresh.in_progress);
+    assert!(app.refresh.deadline.is_some());
+    app.commit_dialog.set_open(false);
+    app.refresh.in_progress = true;
     app.poll_repository_refresh();
     assert!(
-        app.refresh_deadline.is_some(),
+        app.refresh.deadline.is_some(),
         "pending refresh must wait for the running worker"
     );
-    app.refresh_in_progress = false;
+    app.refresh.in_progress = false;
     app.poll_repository_refresh();
-    assert!(app.refresh_in_progress);
-    assert!(app.refresh_deadline.is_none());
+    assert!(app.refresh.in_progress);
+    assert!(app.refresh.deadline.is_none());
 }
 
 #[test]
@@ -3389,7 +3396,7 @@ fn watcher_completion_catches_changes_made_during_registration() {
     // A pending filesystem event must not postpone the immediate catch-up.
     let _ = app.watch_tx.try_send(());
     app.poll_repository_refresh();
-    assert!(app.refresh_in_progress);
+    assert!(app.refresh.in_progress);
     while !app
         .local_status
         .iter()
@@ -3425,4 +3432,55 @@ fn watcher_roots_skip_descendants_and_retain_external_worktree_metadata() {
             PathBuf::from("/common/.git")
         ]
     );
+}
+
+#[test]
+fn ordinary_diffs_pan_by_cells_and_keep_side_columns_aligned() {
+    assert_eq!(skip_columns("👩‍💻x", 1), " x");
+    assert_eq!(skip_columns("👩‍💻x", 2), "x");
+    assert_eq!(skip_columns("a界b", 1), "界b");
+    assert_eq!(skip_columns("a界b", 2), " b");
+    assert_eq!(skip_columns("a界b", 3), "b");
+    assert_eq!(skip_columns("e\u{301}界b", 1), "界b");
+    let lines = parse_diff("@@ -1 +1 @@\n-界界old\n+界界new\n");
+    let side = render_diff(&lines, DiffMode::SideBySide, 23, "file.txt", 1, 1, false);
+    assert_eq!(side[1].width(), 23);
+    let unified = render_diff(&lines, DiffMode::Unified, 40, "file.txt", 1, 1, false);
+    assert!(unified[1].to_string().contains("- 界old"));
+}
+
+#[test]
+fn idle_redraws_sleep_until_input_completion_or_animation() {
+    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+    app.redraw = false;
+    app.poll_update();
+    app.poll_remote_operation();
+    assert_eq!(app.redraw_interval(), None);
+    app.handle_event(Event::Resize(80, 24));
+    // The event collector marks input, including resize, as needing a frame.
+    let mut wheel = None;
+    app.collect_event(Event::Resize(100, 30), &mut wheel);
+    assert_eq!(app.redraw_interval(), Some(Duration::from_millis(16)));
+    app.redraw = false;
+    app.loading = true;
+    assert_eq!(app.redraw_interval(), Some(Duration::from_millis(100)));
+    app.loading = false;
+    app.update_tx.send(UpdateEvent::Install(Ok(true))).unwrap();
+    app.poll_update();
+    assert_eq!(app.redraw_interval(), Some(Duration::from_millis(16)));
+    assert_eq!(app.update_status, UpdateStatus::RestartRequired);
+    app.redraw = false;
+    app.remote_notice = Some(("Done".into(), Instant::now() - Duration::from_secs(4)));
+    app.poll_remote_operation();
+    assert!(
+        app.redraw,
+        "expiring a notice must repaint without user input"
+    );
+}
+
+#[cfg(test)]
+fn three_way_rows(versions: &crate::backend::ConflictVersions) -> Vec<ThreeWayRow> {
+    conflict::ConflictSources::new(versions).rows_for_result(&String::from_utf8_lossy(
+        versions.working.as_deref().unwrap_or_default(),
+    ))
 }

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.0 - 2026-10-28
+
+### Highlights
+
+- First stable release, with prebuilt binaries for macOS and Linux on x86-64 and ARM64.
+- Browse the commit graph, stage files/hunks/lines, manage branches/tags/stashes and remotes, plan interactive rebases, and resolve conflicts in the aligned three-way view.
+
+### Improved
+
+- Avoid idle redraws; repaint for input, background results, resize, and active operation timers.
+- Run commits, rebases, and graph mutations in a serialized background worker, keeping navigation responsive during hooks and signing.
+- Derive panel shortcuts and normal keyboard dispatch from the command catalog, retaining existing context-sensitive aliases.
+- Organize application state and handlers by feature, with dedicated diff, conflict, graph, terminal, rebase, refresh, and update modules.
+- Clarify that commit search covers loaded titles and descriptions, and document supported platforms and release verification.
+
+### Fixed
+
+- Pan ordinary unified and side-by-side diffs by terminal display columns, including partially visible wide glyphs and fixed side-by-side alignment.
+- Omit staging commands while a selected commit's diff is still loading.
+
 ## 0.1.0-alpha.6 - 2026-10-26
 
 ### Improved

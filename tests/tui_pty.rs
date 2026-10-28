@@ -284,6 +284,26 @@ impl Tui {
         );
     }
 
+    /// Starting a background job hides its dialog before Git completes. Wait
+    /// for the operation indicator as well before asserting repository state.
+    /// A frame can span several PTY reads: clearing the dialog may arrive
+    /// before the footer. Require a settled screen, not an intermediate frame.
+    fn wait_for_operation(&self, dialog: &str) {
+        let mut idle_since = None;
+        self.wait_until(
+            Duration::from_secs(30),
+            |contents| format!("operation from {dialog:?} did not finish:\n{contents}"),
+            |_, contents| {
+                if contents.contains(dialog) || contents.contains(" in progress (") {
+                    idle_since = None;
+                    return None;
+                }
+                let since = idle_since.get_or_insert_with(Instant::now);
+                (since.elapsed() >= Duration::from_millis(100)).then_some(())
+            },
+        );
+    }
+
     fn assert_input_highlighted(&self, input: &str) {
         self.wait_until(
             Duration::from_secs(5),
@@ -325,7 +345,18 @@ impl Tui {
 
     fn quit(&mut self) {
         self.send(b"q");
-        let status = self.child.wait().expect("wait for figit");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().expect("check figit exit") {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "figit did not quit; terminal contained:\n{}",
+                self.contents()
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
         assert!(status.success(), "figit exited unsuccessfully: {status:?}");
     }
 }
@@ -689,6 +720,8 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
     let mut tui = Tui::launch(repository.path());
 
     tui.wait_for("Unstaged (2)");
+    // File-list rows can arrive before the footer in the initial PTY frame.
+    tui.wait_for("? help");
     let initial_screen = tui.contents();
     assert!(initial_screen.contains("Graph"));
     assert!(initial_screen.contains("? help"));
@@ -836,7 +869,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
     tui.send(b"\x1b[D\x1b[C"); // Move left/right within the branch-name field.
     tui.assert_input_highlighted("e2e-q-branch");
     tui.send(b"\r");
-    tui.wait_until_hidden("New branch");
+    tui.wait_for_operation("New branch");
     let created = git(
         repository.path(),
         &["show-ref", "--verify", "--quiet", "refs/heads/e2e-q-branch"],
@@ -856,7 +889,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
     tui.send(b"\r");
     tui.wait_for("Checkout local branch release/dolor?");
     tui.send(b"\r");
-    tui.wait_until_hidden("Checkout");
+    tui.wait_for_operation("Checkout");
     let current_branch = git(repository.path(), &["branch", "--show-current"]);
     assert_eq!(
         String::from_utf8_lossy(&current_branch.stdout).trim(),
@@ -880,7 +913,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
     tui.send(b"c");
     tui.wait_for("Checkout selected commit (detached HEAD)?");
     tui.send(b"\r");
-    tui.wait_until_hidden("Checkout");
+    tui.wait_for_operation("Checkout");
     let detached_head = git(
         repository.path(),
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -1606,13 +1639,13 @@ fn rebase_onto_popup_rewrites_the_current_branch() {
 
     // Pick the main tip commit as the new base via search.
     tui.send(b"/");
-    tui.wait_for("Search: ");
+    tui.wait_for("Search loaded commits: ");
     tui.send(b"tip commit");
     tui.send(b"\r");
     tui.wait_for("1 match");
     tui.send(b"\r");
     tui.send(b"\x1b");
-    tui.wait_until_hidden("Search: ");
+    tui.wait_until_hidden("Search loaded commits: ");
 
     tui.send(b"R");
     tui.wait_for("Rebase onto");
@@ -1735,7 +1768,7 @@ fn search_finds_commit_titles_and_descriptions() {
 
     // A phrase that only appears in one commit's description body.
     tui.send(b"/");
-    tui.wait_for("Search: ");
+    tui.wait_for("Search loaded commits: ");
     tui.send(b"secret description phrase");
     tui.send(b"\r");
     tui.wait_for("1 match · 1/1");
@@ -1745,7 +1778,7 @@ fn search_finds_commit_titles_and_descriptions() {
 
     // A case-insensitive title-only query with two matches.
     tui.send(b"/");
-    tui.wait_for("Search: ");
+    tui.wait_for("Search loaded commits: ");
     tui.send(b"NEEDLE");
     tui.send(b"\r");
     tui.wait_for("2 matches · 1/2");
@@ -1760,7 +1793,7 @@ fn search_finds_commit_titles_and_descriptions() {
     tui.wait_for("2 matches · 2/2");
     tui.wait_for_selected_text("first commit");
     tui.send(b"\x1b");
-    tui.wait_until_hidden("Search: ");
+    tui.wait_until_hidden("Search loaded commits: ");
     tui.quit();
 }
 
@@ -1883,7 +1916,7 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
     tui.send(b"updated body");
     tui.assert_cursor_after("updated body");
     tui.send(b"\r\r");
-    tui.wait_until_hidden("Reword selected commit");
+    tui.wait_for_operation("Reword selected commit");
     assert_eq!(
         git_ok(repository.path(), &["log", "--format=%s", "-3"]),
         "tip commit\nrenamed commit\nroot commit"
@@ -1912,7 +1945,7 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
     tui.send(b"c");
     tui.wait_for("Replace edited commit");
     tui.send(b"\r\r\r");
-    tui.wait_until_hidden("Replace edited commit");
+    tui.wait_for_operation("Replace edited commit");
     assert_eq!(
         git_ok(repository.path(), &["show", "-s", "--format=%s", "HEAD"]),
         "renamed commit"
@@ -1920,7 +1953,7 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
     tui.send(b"\x01"); // Ctrl+A aborts globally from the Status panel.
     tui.wait_for("Abort rebase");
     tui.send(b"\r");
-    tui.wait_until_hidden("Abort rebase");
+    tui.wait_for_operation("Abort rebase");
     assert_eq!(
         git_ok(repository.path(), &["rev-parse", "HEAD"]),
         pre_edit_head
@@ -1955,7 +1988,7 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
     tui.send(b"c");
     tui.wait_for("Replace edited commit");
     tui.send(b"\r\r\r");
-    tui.wait_until_hidden("Replace edited commit");
+    tui.wait_for_operation("Replace edited commit");
 
     // Commit the remaining file as a second commit in the paused rebase.
     tui.wait_for("Unstaged (1)");
@@ -2024,7 +2057,7 @@ fn reword_description_cursor_follows_wrapped_words() {
     // on the same visual line, not at the character-wrap boundary above it.
     tui.assert_cursor_after("lllll");
     tui.send(b"\x1b");
-    tui.wait_until_hidden("Reword selected commit");
+    tui.wait_for_operation("Reword selected commit");
     tui.quit();
 }
 
@@ -2532,7 +2565,7 @@ fn interactive_rebase_plan_rewords_a_todo_item_before_running() {
     tui.wait_for("reword");
 
     tui.send(b"\r");
-    tui.wait_until_hidden("Interactive rebase");
+    tui.wait_for_operation("Interactive rebase");
     assert_eq!(
         git_ok(repository.path(), &["log", "--format=%s", "-3"]),
         "tip commit\nplanned target\nroot commit"
@@ -2852,11 +2885,11 @@ fn focused_panel_legends_toggle_and_follow_keyboard_focus() {
     // With no modal input, H remains available on every panel. In the
     // search field it must be inserted as text rather than toggling legends.
     tui.send(b"/");
-    tui.wait_for("Search: ");
+    tui.wait_for("Search loaded commits: ");
     tui.send(b"H");
-    tui.wait_for("Search: H");
+    tui.wait_for("Search loaded commits: H");
     tui.send(b"\x1b");
-    tui.wait_until_hidden("Search: ");
+    tui.wait_until_hidden("Search loaded commits: ");
     tui.wait_for("/ search");
     if let Ok(path) = std::env::var("FIGIT_PANEL_HINT_PREVIEW") {
         tui.send(b"\x1b[Z");
@@ -3517,4 +3550,63 @@ fn untracked_directory_files_refresh_and_stage_individually() {
     std::fs::write(path.join("file.txt"), "external tracked edit\n").unwrap();
     tui.wait_for("Unstaged (3)");
     tui.quit();
+}
+
+#[test]
+fn slow_commit_hooks_keep_navigation_responsive_and_preserve_failed_drafts() {
+    use std::os::unix::fs::PermissionsExt;
+    struct ReleaseHook(std::path::PathBuf);
+    impl Drop for ReleaseHook {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "release");
+        }
+    }
+    for fail in [false, true] {
+        let repository = init_commit_and_local_change_repository();
+        let path = repository.path();
+        git_ok(path, &["add", "tracked-b.txt"]);
+        let head = git_ok(path, &["rev-parse", "HEAD"]);
+        let hook = path.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, format!(
+            "#!/bin/sh\ngitdir=$(git rev-parse --absolute-git-dir)\ntouch \"$gitdir/hook-started\"\nwhile [ ! -f \"$gitdir/hook-release\" ]; do sleep 0.02; done\n{}\n",
+            if fail { "echo 'Delayed hook rejected' >&2; exit 1" } else { "exit 0" }
+        )).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let release = ReleaseHook(path.join(".git/hook-release"));
+        let mut tui = Tui::launch(path);
+        tui.wait_for("Staged (1)");
+        tui.send(b"ckeep this draft\x13");
+        tui.wait_for("Commit in progress");
+        tui.wait_until(
+            Duration::from_secs(5),
+            |_| "hook never started".into(),
+            |_, _| path.join(".git/hook-started").exists().then_some(()),
+        );
+        // Completion is blocked on a file, so this can only pass if input is
+        // processed independently of the running Git subprocess.
+        tui.send(b"\t");
+        tui.wait_for_title_focus("Diff");
+        tui.send(b" \x13\r"); // no second mutation may start while busy
+        assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), head);
+        drop(release);
+        if fail {
+            tui.wait_for("Delayed hook rejected");
+            tui.wait_for("keep this draft");
+            assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), head);
+            assert_eq!(
+                git_ok(path, &["diff", "--cached", "--name-only"]),
+                "tracked-b.txt"
+            );
+            tui.send(b"\x1b");
+            tui.wait_until_hidden("keep this draft");
+        } else {
+            tui.wait_for("Commit created");
+            assert_eq!(
+                git_ok(path, &["log", "-1", "--format=%s"]),
+                "keep this draft"
+            );
+            assert_eq!(git_ok(path, &["rev-list", "--count", "HEAD"]), "3");
+        }
+        tui.quit();
+    }
 }
