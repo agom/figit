@@ -720,6 +720,8 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
     let mut tui = Tui::launch(repository.path());
 
     tui.wait_for("Unstaged (2)");
+    // File-list rows can arrive before the footer in the initial PTY frame.
+    tui.wait_for("? help");
     let initial_screen = tui.contents();
     assert!(initial_screen.contains("Graph"));
     assert!(initial_screen.contains("? help"));
