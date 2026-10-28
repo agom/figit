@@ -286,12 +286,20 @@ impl Tui {
 
     /// Starting a background job hides its dialog before Git completes. Wait
     /// for the operation indicator as well before asserting repository state.
+    /// A frame can span several PTY reads: clearing the dialog may arrive
+    /// before the footer. Require a settled screen, not an intermediate frame.
     fn wait_for_operation(&self, dialog: &str) {
+        let mut idle_since = None;
         self.wait_until(
             Duration::from_secs(30),
             |contents| format!("operation from {dialog:?} did not finish:\n{contents}"),
             |_, contents| {
-                (!contents.contains(dialog) && !contents.contains(" in progress (")).then_some(())
+                if contents.contains(dialog) || contents.contains(" in progress (") {
+                    idle_since = None;
+                    return None;
+                }
+                let since = idle_since.get_or_insert_with(Instant::now);
+                (since.elapsed() >= Duration::from_millis(100)).then_some(())
             },
         );
     }
