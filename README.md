@@ -48,7 +48,9 @@ Manage stashes without leaving the app:
 
 ## Install
 
-Requires `git` on `PATH`.
+Prebuilt binaries support macOS and Linux on Intel/AMD64 and ARM64. Requires
+`git` on `PATH`. A [Nerd Font](https://www.nerdfonts.com/) is recommended for
+file and branch icons. Windows is not currently a supported release target.
 
 ```sh
 curl -sSfL https://figit.dev/install | sh
@@ -61,6 +63,7 @@ cargo install --git https://github.com/agom/figit.git
 ```
 
 Press `U` to check for or install an update, then restart.
+Source and package-manager installations use their own update mechanism.
 
 ## Usage
 
@@ -80,7 +83,7 @@ figit --version
 | `g` | Toggle the graph pane |
 | `z` | Maximize / restore the focused panel |
 | `j` / `k` (or `↑` / `↓`) | Move the selection / scroll |
-| `/` | Search commits: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
+| `/` | Search loaded commit titles and descriptions: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
 | `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
 | `U` | Check for or install an update |
 | `:` | Fuzzy-find commands for the focused panel |
@@ -95,6 +98,9 @@ the current branch. Other panels show up to three relevant shortcuts.
 Hints adapt to the selected file and diff mode, and fit without wrapping in narrow
 panels. Press `Shift+H` to hide or show them for the current session; hints start
 visible on each launch. Press `?` for the full key map.
+
+Commit search covers the history currently loaded in the graph. Older commits
+load as you navigate toward the end of the graph; rerun the search to include them.
 
 Press `:` to open commands above the focused panel’s bottom border. Type to
 fuzzy-filter command names, use `↑`/`↓` to select, `Enter` to run, and `Esc` to

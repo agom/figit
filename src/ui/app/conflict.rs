@@ -287,6 +287,7 @@ impl App {
         let (ours_color, theirs_color) = self
             .conflict_colors()
             .unwrap_or((Color::LightBlue, Color::LightYellow));
+        let commands = self.panel_commands();
         let palette = self.terminal_palette;
         let active_style = self.selection_style(self.focus == Focus::Diff);
         let no_color = self.no_color;
@@ -529,19 +530,20 @@ impl App {
             );
             return;
         }
+        use CommandId::*;
         let mut actions = Vec::new();
-        if view.result_preview {
-            actions.extend([("Enter", "confirm"), ("Esc", "cancel preview")]);
-        }
-        actions.push(("o/t", scope));
-        if !view.hunks.is_empty() {
-            actions.push(("[/]", "conflict"));
-        }
-        actions.extend([
-            ("b", "restore whole file"),
-            ("e", "editor"),
-            (":", "commands"),
-        ]);
+        let mut add = |id, key: Option<&'static str>, label| {
+            if let Some(command) = commands.iter().find(|command| command.id == id) {
+                actions.push((key.unwrap_or(command.key), label));
+            }
+        };
+        add(ConfirmConflict, None, "confirm");
+        add(CancelConflict, None, "cancel preview");
+        add(Conflict(ConflictSide::Ours), Some("o/t"), scope);
+        add(PreviousHunk, Some("[/]"), "conflict");
+        add(Conflict(ConflictSide::Base), None, "restore whole file");
+        add(Editor, None, "editor");
+        actions.push((":", "commands"));
         frame.render_widget(
             Paragraph::new(styled_key_hints_fitting(
                 &actions,
@@ -560,5 +562,82 @@ impl App {
                 &mut state,
             );
         }
+    }
+}
+
+pub(super) struct ThreeWayView {
+    pub(super) path: GitPath,
+    pub(super) versions: crate::backend::ConflictVersions,
+    pub(super) sources: conflict::ConflictSources,
+    pub(super) rows: std::sync::Arc<Vec<ThreeWayRow>>,
+    pub(super) working_rows: std::sync::Arc<Vec<ThreeWayRow>>,
+    pub(super) hunks: Vec<ConflictHunk>,
+    pub(super) resolves_hunks: bool,
+    pub(super) hunk_rows: Vec<std::ops::Range<usize>>,
+    pub(super) working_hunk_rows: Vec<std::ops::Range<usize>>,
+    pub(super) line_cache: std::cell::RefCell<HashMap<conflict::ConflictLineKey, Line<'static>>>,
+    pub(super) max_columns: usize,
+    pub(super) number_width: usize,
+    pub(super) viewport_height: usize,
+    pub(super) viewport_width: usize,
+    pub(super) working: Vec<u8>,
+    pub(super) pending_resolution: Option<ConflictResolution>,
+    pub(super) result_preview: bool,
+    pub(super) chosen_side: Option<ConflictSide>,
+    pub(super) hunk_index: usize,
+    pub(super) ours_missing: bool,
+    pub(super) theirs_missing: bool,
+    pub(super) result_missing: bool,
+    pub(super) scroll_y: usize,
+    pub(super) scroll_x: usize,
+}
+
+pub(super) fn conflict_paths(status: &[StatusEntry]) -> HashSet<GitPath> {
+    status
+        .iter()
+        .filter(|entry| entry.is_conflict())
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
+impl App {
+    #[cfg(test)]
+    pub(super) fn graph_lane_color(&self, id: &str) -> Option<Color> {
+        self.rows.iter().find_map(|row| {
+            (self.graph.commits[row.commit_index].id == id)
+                .then(|| {
+                    row.node_col
+                        .map(|col| PALETTE[row.colors[col] % PALETTE.len()])
+                })
+                .flatten()
+        })
+    }
+
+    pub(super) fn conflict_colors(&self) -> Option<(Color, Color)> {
+        self.conflict_commits
+            .as_ref()
+            .map(|_| (Color::LightBlue, Color::LightYellow))
+    }
+
+    pub(super) fn conflict_commit_color(&self, id: &str) -> Option<Color> {
+        let commits = self.conflict_commits.as_ref()?;
+        let (ours, theirs) = self.conflict_colors()?;
+        if id == commits.ours {
+            Some(ours)
+        } else if id == commits.theirs {
+            Some(theirs)
+        } else if commits.base.as_deref() == Some(id) {
+            Some(Color::LightMagenta)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn selected_conflict_colors(&self) -> Option<(Color, Color)> {
+        if self.historical_commit.is_some() || !self.status.get(self.selected_status)?.is_conflict()
+        {
+            return None;
+        }
+        self.conflict_colors()
     }
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Improved
+
+- Avoid idle redraws; repaint for input, background results, resize, and active operation timers.
+- Run commits, rebases, and graph mutations in a serialized background worker, keeping navigation responsive during hooks and signing.
+- Derive panel shortcuts and normal keyboard dispatch from the command catalog, retaining existing context-sensitive aliases.
+- Group commit editing into an explicit dialog state and repository refresh into a dedicated state, with separate commit, search, refresh, and job modules.
+- Extract the diff engine, diff loading/caching, terminal lifecycle, and shared text helpers from the main application module.
+- Keep conflict models, graph selection, rebase, remotes, stashes, updates, and repository refresh in their feature modules.
+- Clarify that commit search covers loaded titles and descriptions, and document supported platforms and release verification.
+
+### Fixed
+
+- Pan ordinary unified and side-by-side diffs by terminal display columns, including partially visible wide glyphs and fixed side-by-side alignment.
+- Omit staging commands while a selected commit's diff is still loading.
+
 ## 0.1.0-alpha.6 - 2026-10-26
 
 ### Improved

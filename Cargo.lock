@@ -756,6 +756,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "thiserror 2.0.20",
+ "unicode-segmentation",
  "vt100",
 ]
 

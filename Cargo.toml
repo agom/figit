@@ -20,6 +20,7 @@ libc = "0.2"
 tempfile = "3"
 notify = "8"
 devicons = "0.6"
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 portable-pty = "0.9"

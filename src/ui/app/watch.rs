@@ -22,6 +22,7 @@ impl App {
                 Err("file watcher setup ended unexpectedly".to_string())
             }
         };
+        self.redraw = true;
         self.watch_setup = None;
         match result {
             Ok(watcher) => {
@@ -30,7 +31,7 @@ impl App {
                 self.watcher_poll_deadline = None;
                 // The first snapshot may predate registration. Rescan once to
                 // catch writes made before their directories were watched.
-                self.refresh_deadline = Some(Instant::now());
+                self.refresh.deadline = Some(Instant::now());
                 crate::profile::mark("watcher ready");
             }
             Err(error) => {
@@ -39,7 +40,7 @@ impl App {
                 // automatic refresh. Reuse the background snapshot worker;
                 // polling never recursively registers filesystem watches.
                 self.watcher_poll_deadline = Some(Instant::now() + POLL_INTERVAL);
-                self.refresh_deadline = Some(Instant::now());
+                self.refresh.deadline = Some(Instant::now());
             }
         }
     }
@@ -116,4 +117,18 @@ pub(super) fn watch_roots(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// Ignore temporary Git lock files, while retaining completed index writes
+/// so external staging and unstaging update the UI.
+pub(super) fn is_ignored_watch_path(path: &Path, git_dir: Option<&Path>) -> bool {
+    let Some(git_dir) = git_dir else { return false };
+    if !path.starts_with(git_dir) {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    name.ends_with(".lock")
 }
