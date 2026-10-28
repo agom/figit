@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-figit — a terminal Git client built around a real commit graph
+figit — a visual Git workspace for your terminal
 
 USAGE:
     figit [OPTIONS] [PATH]

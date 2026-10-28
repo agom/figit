@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/github/license/agom/figit?color=a6e3a1)](LICENSE)
 [![GitHub release downloads](https://img.shields.io/github/downloads/agom/figit/total?color=cba6f7)](https://github.com/agom/figit/releases)
 
-A Git TUI.
+A visual Git workspace for your terminal.
 
 `figit` renders a multi-lane DAG (merge topology, branch colors, refs) and puts
 useful workflows on top of it: file/hunk/line staging, commit/amend/fixup,
