@@ -4,6 +4,10 @@
 
 # figit
 
+[![Release](https://img.shields.io/github/v/release/agom/figit?color=89b4fa)](https://github.com/agom/figit/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/agom/figit?color=a6e3a1)](LICENSE)
+[![GitHub release downloads](https://img.shields.io/github/downloads/agom/figit/total?color=cba6f7)](https://github.com/agom/figit/releases)
+
 A Git TUI.
 
 `figit` renders a multi-lane DAG (merge topology, branch colors, refs) and puts
