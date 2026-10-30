@@ -190,6 +190,22 @@ impl App {
             .map(|reference| reference.name.clone())
     }
 
+    /// Remote-tracking branch at the selected commit. Prefer this only when no
+    /// local branch points at the commit; callers should check local first.
+    pub(super) fn selected_remote_branch(&self) -> Option<String> {
+        let commit = self.selected_commit_id()?;
+        self.graph
+            .refs
+            .iter()
+            .filter(|reference| {
+                reference.kind == RefKind::RemoteBranch
+                    && reference.id == commit
+                    && !reference.name.ends_with("/HEAD")
+            })
+            .map(|reference| reference.name.clone())
+            .min()
+    }
+
     /// A tag pointing at the selected commit, used to push releases.
     pub(super) fn selected_tag(&self) -> Option<String> {
         let commit = self.selected_commit_id()?;

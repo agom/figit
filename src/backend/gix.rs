@@ -2219,6 +2219,10 @@ impl super::GitBackend for GixBackend {
         run_git(&self.workdir, ["checkout", target])
     }
 
+    fn checkout_remote_branch(&self, target: &str) -> Result<()> {
+        run_git(&self.workdir, ["checkout", "--track", target])
+    }
+
     fn undo_options(&self) -> Result<Vec<UndoInfo>> {
         undo_options(&self.workdir)
     }

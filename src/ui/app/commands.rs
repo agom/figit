@@ -103,7 +103,9 @@ impl App {
                     if self.selected_current_branch() {
                         add(Graph(GraphAction::Pull), "Pull", "p", "update branch");
                     }
-                    if self.selected_local_branch().is_some() {
+                    if self.selected_local_branch().is_some()
+                        || self.selected_remote_branch().is_some()
+                    {
                         add(
                             Graph(GraphAction::CheckoutBranch),
                             "Checkout branch",
@@ -453,7 +455,7 @@ impl App {
         match id {
             Graph(GraphAction::CheckoutBranch | GraphAction::Rename) => {
                 if let Graph(action) = id {
-                    self.open_local_branch_action(action);
+                    self.open_branch_ref_action(action);
                 }
             }
             Graph(GraphAction::Delete) => self.open_delete_action(),
