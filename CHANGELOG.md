@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 - 2026-10-30
+
+### Improved
+
+- Check out remote-tracking branches from the graph by creating a local tracking branch.
+
 ## 0.1.1 - 2026-10-30
 
 ### Improved
