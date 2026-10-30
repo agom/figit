@@ -54,11 +54,12 @@ impl App {
         self.open_graph_action(GraphAction::Delete);
     }
 
-    /// Open a graph action that operates on the local branch at the selected
-    /// commit. Mirrors the push precondition and reports the same way instead
-    /// of silently doing nothing when there is no branch.
-    pub(super) fn open_local_branch_action(&mut self, action: GraphAction) {
-        if self.selected_local_branch().is_none() {
+    /// Open a graph action that operates on a branch at the selected commit.
+    /// Checkout accepts remote-tracking branches too; rename remains local-only.
+    pub(super) fn open_branch_ref_action(&mut self, action: GraphAction) {
+        let has_branch = self.selected_local_branch().is_some()
+            || (action == GraphAction::CheckoutBranch && self.selected_remote_branch().is_some());
+        if !has_branch {
             self.show_git_error(
                 "Select a commit with a local branch before running this action".into(),
             );
@@ -251,6 +252,7 @@ impl App {
         let reset_mode = self.reset_mode;
         let remote_action = self.remote_action;
         let branch = self.selected_local_branch();
+        let remote_branch = self.selected_remote_branch();
         let delete = self.delete_targets.get(self.delete_target_index).cloned();
         let undo = self.undo_options.get(self.undo_selection).cloned();
         let discard_paths = self.discard_paths.clone();
@@ -265,10 +267,13 @@ impl App {
                     ["--soft", "--mixed", "--hard"][reset_mode],
                 ),
                 GraphAction::Checkout => backend.checkout(target.as_deref().unwrap()),
-                GraphAction::CheckoutBranch => branch.map_or_else(
-                    || Err(anyhow::anyhow!("no local branch at selected commit")),
-                    |branch| backend.checkout(&branch),
-                ),
+                GraphAction::CheckoutBranch => match branch {
+                    Some(branch) => backend.checkout(&branch),
+                    None => remote_branch.map_or_else(
+                        || Err(anyhow::anyhow!("no branch at selected commit")),
+                        |branch| backend.checkout_remote_branch(&branch),
+                    ),
+                },
                 GraphAction::CherryPick => backend.cherry_pick(target.as_deref().unwrap()),
                 GraphAction::Revert => backend.revert(target.as_deref().unwrap()),
                 GraphAction::RebaseOnto => unreachable!("rebase onto is handled before dispatch"),

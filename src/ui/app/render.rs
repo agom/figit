@@ -1458,10 +1458,13 @@ impl App {
         let mut content = match action {
             GraphAction::Branch => format!("Branch name: {}", self.graph_action_input),
             GraphAction::Tag => format!("Tag name: {}", self.graph_action_input),
-            GraphAction::CheckoutBranch => format!(
-                "Checkout local branch {}?",
-                self.selected_local_branch().unwrap_or_default()
-            ),
+            GraphAction::CheckoutBranch => match self.selected_local_branch() {
+                Some(branch) => format!("Checkout local branch {branch}?"),
+                None => format!(
+                    "Create and checkout a local tracking branch for {}?",
+                    self.selected_remote_branch().unwrap_or_default()
+                ),
+            },
             GraphAction::Reset => {
                 format!("Reset mode: {}", ["soft", "mixed", "hard"][self.reset_mode])
             }

@@ -90,6 +90,7 @@ pub trait GitBackend {
     fn tag(&self, name: &str, target: &str) -> anyhow::Result<()>;
     fn reset(&self, target: &str, mode: &str) -> anyhow::Result<()>;
     fn checkout(&self, target: &str) -> anyhow::Result<()>;
+    fn checkout_remote_branch(&self, target: &str) -> anyhow::Result<()>;
     fn undo_options(&self) -> anyhow::Result<Vec<UndoInfo>>;
     fn undo_ref_change(&self, expected: &UndoInfo) -> anyhow::Result<()>;
     fn cherry_pick(&self, target: &str) -> anyhow::Result<()>;
