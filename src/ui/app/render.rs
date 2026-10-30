@@ -2306,6 +2306,11 @@ impl App {
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         let width = usize::from(self.viewport_width);
         let version_width = Line::from(version.as_str()).width();
+        // Keep the actionable modal hints readable on very narrow terminals.
+        // Ratatui will clip to the actual frame width when rendering.
+        if width > 0 && width < version_width + 12 {
+            return clip_line(&content, usize::MAX);
+        }
         let separator_width = 1;
         let content_width = if width == 0 {
             usize::MAX

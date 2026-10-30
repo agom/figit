@@ -13,7 +13,7 @@ use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::text::{column_suffix, skip_columns};
+use super::text::skip_columns;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DiffMode {
@@ -682,43 +682,38 @@ fn styled_suffix(
     offset: usize,
     max_width: usize,
 ) -> (Vec<Span<'static>>, usize) {
-    let mut skipped = offset;
+    let mut remaining = offset;
     let mut width = 0;
     let mut padding = 0;
     let mut output = Vec::with_capacity(spans.len());
     for span in spans {
         let text = span.content.to_string();
-        let span_width = Line::from(text.as_str()).width();
-        if skipped > 0 && skipped >= span_width {
-            skipped -= span_width;
-            continue;
-        }
-        let (suffix, partial) = column_suffix(&text, skipped);
-        skipped = 0;
-        if partial > 0 {
-            let fill = partial.min(max_width.saturating_sub(width));
-            if fill > 0 {
-                output.push(Span::styled(" ".repeat(fill), span.style));
-                padding += fill;
-                width += fill;
-            }
-        }
-        let available = max_width.saturating_sub(width);
-        let mut byte_end = 0;
-        let mut text_width = 0;
-        for (byte, grapheme) in suffix.grapheme_indices(true) {
+        let mut visible = String::new();
+        for grapheme in text.graphemes(true) {
             let cells = Line::from(grapheme).width();
-            if text_width + cells > available {
+            if remaining > 0 {
+                if cells <= remaining {
+                    remaining -= cells;
+                    continue;
+                }
+                let fill = (cells - remaining).min(max_width.saturating_sub(width));
+                remaining = 0;
+                if fill > 0 {
+                    padding += fill;
+                    width += fill;
+                }
+                continue;
+            }
+            if width + cells > max_width {
                 break;
             }
-            byte_end = byte + grapheme.len();
-            text_width += cells;
+            visible.push_str(grapheme);
+            width += cells;
         }
-        if byte_end > 0 {
-            output.push(Span::styled(suffix[..byte_end].to_string(), span.style));
-            width += text_width;
+        if !visible.is_empty() {
+            output.push(Span::styled(visible, span.style));
         }
-        if byte_end < suffix.len() || width >= max_width {
+        if width >= max_width {
             break;
         }
     }
