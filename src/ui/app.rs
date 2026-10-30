@@ -89,7 +89,7 @@ use diff::{
 };
 use terminal::TerminalAnsiPalette;
 use text::{
-    backspace_at_cursor, delete_at_cursor, highlight_search_matches, insert_at_cursor,
+    backspace_at_cursor, clip_line, delete_at_cursor, highlight_search_matches, insert_at_cursor,
     move_cursor_to_line_edge, move_cursor_vertical, pad_colored_lines, single_line_cursor,
     styled_key_hints, styled_key_hints_fitting, truncate, truncate_start, wrapped_text_cursor,
     wrapped_text_lines,
@@ -214,6 +214,7 @@ pub struct App {
     update_rx: Receiver<UpdateEvent>,
     update_status: UpdateStatus,
     update_status_since: Option<Instant>,
+    update_check_deadline: Option<Instant>,
     remote_choices: Vec<String>,
     remote_selection: usize,
     push_remote: Option<String>,
@@ -408,6 +409,7 @@ impl App {
             update_rx,
             update_status: UpdateStatus::Idle,
             update_status_since: None,
+            update_check_deadline: None,
             remote_choices: Vec::new(),
             remote_selection: 0,
             push_remote: None,

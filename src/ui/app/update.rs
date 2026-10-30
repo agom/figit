@@ -4,13 +4,14 @@ use axoupdater::AxoUpdater;
 
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum UpdateAvailability {
-    Available,
+    Available(String),
     Current,
     UnsupportedInstall,
-    SkippedRecentlyChecked,
 }
+
+pub(super) const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 pub(super) enum UpdateEvent {
     Check {
@@ -24,50 +25,12 @@ pub(super) enum UpdateEvent {
 pub(super) enum UpdateStatus {
     Idle,
     Checking,
-    Available,
+    Available(String),
     Installing,
     RestartRequired,
     Current,
     UnsupportedInstall,
     Failed(String),
-}
-
-pub(super) fn update_check_cache_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .map(|cache| cache.join("figit/update-check"))
-}
-
-pub(super) fn update_check_is_recent() -> bool {
-    let Some(path) = update_check_cache_path() else {
-        return false;
-    };
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(previous) = contents.trim().parse::<u64>() else {
-        return false;
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(previous, |duration| duration.as_secs());
-    now.saturating_sub(previous) < Duration::from_secs(24 * 60 * 60).as_secs()
-}
-
-pub(super) fn record_update_check() {
-    let Some(path) = update_check_cache_path() else {
-        return;
-    };
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_ok() {
-        let _ = std::fs::write(path, now.as_secs().to_string());
-    }
 }
 
 impl App {
@@ -78,14 +41,12 @@ impl App {
         ) {
             return;
         }
+        self.update_check_deadline = Some(Instant::now() + UPDATE_CHECK_INTERVAL);
         self.update_status = UpdateStatus::Checking;
         self.update_status_since = Some(Instant::now());
         let sender = self.update_tx.clone();
         thread::spawn(move || {
             let result = (|| -> anyhow::Result<UpdateAvailability> {
-                if !manual && update_check_is_recent() {
-                    return Ok(UpdateAvailability::SkippedRecentlyChecked);
-                }
                 let mut updater = AxoUpdater::new_for(env!("CARGO_PKG_NAME"));
                 // Only cargo-dist installations have a receipt that identifies
                 // their release source and install path. Leave source builds
@@ -93,9 +54,21 @@ impl App {
                 if updater.load_receipt().is_err() {
                     return Ok(UpdateAvailability::UnsupportedInstall);
                 }
-                record_update_check();
-                if updater.is_update_needed_sync()? {
-                    Ok(UpdateAvailability::Available)
+                if !updater.check_receipt_is_for_this_executable()? {
+                    return Ok(UpdateAvailability::UnsupportedInstall);
+                }
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                let (needed, version) = runtime.block_on(async {
+                    let version = updater.query_new_version().await?.map(ToString::to_string);
+                    let needed = updater.is_update_needed().await?;
+                    anyhow::Ok((needed, version))
+                })?;
+                if needed {
+                    Ok(UpdateAvailability::Available(
+                        version.unwrap_or_else(|| "newer version".to_string()),
+                    ))
                 } else {
                     Ok(UpdateAvailability::Current)
                 }
@@ -106,7 +79,7 @@ impl App {
     }
 
     pub(super) fn install_update(&mut self) {
-        if self.update_status != UpdateStatus::Available {
+        if !matches!(self.update_status, UpdateStatus::Available(_)) {
             return;
         }
         self.update_status = UpdateStatus::Installing;
@@ -132,12 +105,13 @@ impl App {
             match event {
                 UpdateEvent::Check { manual, result } => {
                     self.update_status = match result {
-                        Ok(UpdateAvailability::Available) => UpdateStatus::Available,
+                        Ok(UpdateAvailability::Available(version)) => {
+                            UpdateStatus::Available(version)
+                        }
                         Ok(UpdateAvailability::Current) if manual => UpdateStatus::Current,
                         Ok(UpdateAvailability::UnsupportedInstall) if manual => {
                             UpdateStatus::UnsupportedInstall
                         }
-                        Ok(UpdateAvailability::SkippedRecentlyChecked) => UpdateStatus::Idle,
                         Ok(_) => UpdateStatus::Idle,
                         Err(error) if manual => UpdateStatus::Failed(error),
                         Err(_) => UpdateStatus::Idle,

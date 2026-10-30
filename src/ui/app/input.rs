@@ -165,7 +165,7 @@ impl App {
             && self.rebase_plan.is_none()
         {
             match self.update_status.clone() {
-                UpdateStatus::Available => self.install_update(),
+                UpdateStatus::Available(_) => self.install_update(),
                 UpdateStatus::Checking | UpdateStatus::Installing => {}
                 _ => self.start_update_check(true),
             }

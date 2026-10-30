@@ -11,8 +11,9 @@ use similar::{ChangeTag, TextDiff};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SynStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
+use unicode_segmentation::UnicodeSegmentation;
 
-use super::text::{column_suffix, skip_columns, truncate};
+use super::text::{column_suffix, skip_columns};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DiffMode {
@@ -544,8 +545,10 @@ fn side_spans(
         DiffKind::Removed if old_side => '-',
         _ => ' ',
     };
-    let content = truncate(
-        &skip_columns(line.text.get(1..).unwrap_or(&line.text), offset_x),
+    let code = line.text.get(1..).unwrap_or(&line.text);
+    let (content_spans, scroll_padding) = styled_suffix(
+        highlight_code(code, path, line.kind, highlight),
+        offset_x,
         width.saturating_sub(number_width + 1),
     );
     let mut spans = vec![Span::styled(number_text, Style::default().fg(number_color))];
@@ -554,8 +557,18 @@ fn side_spans(
         marker_style = marker_style.bg(bg);
     }
     spans.push(Span::styled(marker.to_string(), marker_style));
-    spans.extend(highlight_code(&content, path, line.kind, highlight));
-    let used = number_width + 1 + Line::from(content.as_str()).width();
+    if scroll_padding > 0 {
+        spans.push(Span::styled(
+            " ".repeat(scroll_padding),
+            Style::default().bg(diff_background(line.kind).unwrap_or(Color::Reset)),
+        ));
+    }
+    let visible_content = content_spans
+        .iter()
+        .map(|span| Line::from(span.content.as_ref()).width())
+        .sum::<usize>();
+    spans.extend(content_spans);
+    let used = number_width + 1 + scroll_padding + visible_content;
     if used < width {
         let mut pad_style = Style::default();
         if let Some(bg) = diff_background(line.kind) {
@@ -604,38 +617,112 @@ fn render_unified_line(
     }
     rendered.push(Span::styled(prefix.to_string(), prefix_style));
     let full_code = line.text.get(prefix.len_utf8()..).unwrap_or_default();
-    let (code, padding) = column_suffix(full_code, offset_x);
+    let code_spans = highlight_code_with_inline(full_code, path, line.kind, highlight, inline);
+    let (code_spans, padding) = styled_suffix(code_spans, offset_x, usize::MAX);
     rendered.push(Span::styled(" ".repeat(padding), prefix_style));
-    let dropped = full_code.len() - code.len();
-    if let Some(ranges) = inline {
-        let mut cursor = 0;
-        for &(start, end) in ranges {
-            if end <= dropped {
-                continue;
-            }
-            let start = start.saturating_sub(dropped).min(code.len());
-            let end = (end - dropped).min(code.len());
-            if start >= end {
-                continue;
-            }
-            rendered.extend(highlight_code(
-                &code[cursor..start],
-                path,
-                line.kind,
-                highlight,
-            ));
-            let mut style = Style::default().fg(diff_color(line.kind));
-            if let Some(bg) = bright_diff_background(line.kind) {
-                style = style.bg(bg);
-            }
-            rendered.push(Span::styled(code[start..end].to_string(), style));
-            cursor = end;
-        }
-        rendered.extend(highlight_code(&code[cursor..], path, line.kind, highlight));
-    } else {
-        rendered.extend(highlight_code(code, path, line.kind, highlight));
-    }
+    rendered.extend(code_spans);
     Line::from(rendered)
+}
+
+/// Highlight the complete source line before cropping it horizontally. Parsing
+/// only the visible suffix loses lexical context when it begins inside a token.
+fn highlight_code_with_inline(
+    code: &str,
+    path: &str,
+    kind: DiffKind,
+    highlight: bool,
+    ranges: Option<&[(usize, usize)]>,
+) -> Vec<Span<'static>> {
+    let spans = highlight_code(code, path, kind, highlight);
+    let Some(ranges) = ranges.filter(|ranges| !ranges.is_empty()) else {
+        return spans;
+    };
+    let Some(background) = bright_diff_background(kind) else {
+        return spans;
+    };
+
+    let mut output = Vec::with_capacity(spans.len() + ranges.len());
+    let mut span_start = 0;
+    for span in spans {
+        let text = span.content.to_string();
+        let span_end = span_start + text.len();
+        let mut cursor = 0;
+        for &(range_start, range_end) in ranges {
+            if range_end <= span_start + cursor {
+                continue;
+            }
+            if range_start >= span_end {
+                break;
+            }
+            let start = range_start.saturating_sub(span_start).min(text.len());
+            let end = range_end.saturating_sub(span_start).min(text.len());
+            if start > cursor {
+                output.push(Span::styled(text[cursor..start].to_string(), span.style));
+            }
+            let changed_start = start.max(cursor);
+            if changed_start < end {
+                let mut style = span.style;
+                style.bg = Some(background);
+                output.push(Span::styled(text[changed_start..end].to_string(), style));
+                cursor = end;
+            }
+        }
+        if cursor < text.len() {
+            output.push(Span::styled(text[cursor..].to_string(), span.style));
+        }
+        span_start = span_end;
+    }
+    output
+}
+
+/// Keep syntax styles while removing a display-column prefix and limiting the
+/// result to a visible width. A partially cut wide glyph becomes padding.
+fn styled_suffix(
+    spans: Vec<Span<'static>>,
+    offset: usize,
+    max_width: usize,
+) -> (Vec<Span<'static>>, usize) {
+    let mut skipped = offset;
+    let mut width = 0;
+    let mut padding = 0;
+    let mut output = Vec::with_capacity(spans.len());
+    for span in spans {
+        let text = span.content.to_string();
+        let span_width = Line::from(text.as_str()).width();
+        if skipped > 0 && skipped >= span_width {
+            skipped -= span_width;
+            continue;
+        }
+        let (suffix, partial) = column_suffix(&text, skipped);
+        skipped = 0;
+        if partial > 0 {
+            let fill = partial.min(max_width.saturating_sub(width));
+            if fill > 0 {
+                output.push(Span::styled(" ".repeat(fill), span.style));
+                padding += fill;
+                width += fill;
+            }
+        }
+        let available = max_width.saturating_sub(width);
+        let mut byte_end = 0;
+        let mut text_width = 0;
+        for (byte, grapheme) in suffix.grapheme_indices(true) {
+            let cells = Line::from(grapheme).width();
+            if text_width + cells > available {
+                break;
+            }
+            byte_end = byte + grapheme.len();
+            text_width += cells;
+        }
+        if byte_end > 0 {
+            output.push(Span::styled(suffix[..byte_end].to_string(), span.style));
+            width += text_width;
+        }
+        if byte_end < suffix.len() || width >= max_width {
+            break;
+        }
+    }
+    (output, padding)
 }
 
 type ChangeRanges = Vec<(usize, usize)>;

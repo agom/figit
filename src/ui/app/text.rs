@@ -419,6 +419,30 @@ pub(super) fn pad_colored_lines<'a>(lines: &mut [Line<'a>], width: usize) {
     }
 }
 
+/// Clip a styled line to a terminal-cell width without flattening its colors.
+pub(super) fn clip_line(line: &Line<'_>, max_width: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    'outer: for span in &line.spans {
+        let mut content = String::new();
+        for grapheme in span.content.graphemes(true) {
+            let cells = Line::from(grapheme).width();
+            if used + cells > max_width {
+                if !content.is_empty() {
+                    spans.push(Span::styled(content, span.style));
+                }
+                break 'outer;
+            }
+            content.push_str(grapheme);
+            used += cells;
+        }
+        if !content.is_empty() {
+            spans.push(Span::styled(content, span.style));
+        }
+    }
+    Line::from(spans).style(line.style)
+}
+
 /// Find a suffix at a display-column boundary. If the boundary cuts a wide
 /// glyph, replace its visible remainder with spaces to keep columns aligned.
 pub(super) fn column_suffix(text: &str, columns: usize) -> (&str, usize) {
