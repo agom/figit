@@ -33,7 +33,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
-use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
+#[cfg(target_os = "macos")]
+use notify::PollWatcher;
+#[cfg(not(target_os = "macos"))]
+use notify::RecommendedWatcher;
+use notify::{Config as NotifyConfig, RecursiveMode, Watcher};
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -186,8 +190,10 @@ pub struct App {
     watch_error: Option<String>,
     watcher_error: Option<String>,
     watcher_poll_deadline: Option<Instant>,
+    visible_file_poll_deadline: Option<Instant>,
+    visible_file_fingerprint: Option<(GitPath, Option<(std::time::SystemTime, u64)>)>,
     watch_setup: Option<watch::WatcherSetup>,
-    repository_watcher: Option<RecommendedWatcher>,
+    repository_watcher: Option<watch::LiveWatcher>,
     graph_details_tx: Sender<GraphDetailsCompletion>,
     graph_details_rx: Receiver<GraphDetailsCompletion>,
     graph_details_deadline: Option<Instant>,
@@ -378,6 +384,8 @@ impl App {
             watch_error: None,
             watcher_error: None,
             watcher_poll_deadline: None,
+            visible_file_poll_deadline: Some(Instant::now() + Duration::from_millis(500)),
+            visible_file_fingerprint: None,
             watch_setup: None,
             repository_watcher: None,
             graph_details_tx,

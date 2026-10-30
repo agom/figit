@@ -315,7 +315,7 @@ impl App {
     }
 
     /// Select the checked-out commit so the graph opens where work is happening.
-    fn select_head_commit(&mut self) {
+    pub(super) fn select_head_commit(&mut self) {
         let Some(head) = self.graph.head_id.as_deref() else {
             return;
         };

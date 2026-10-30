@@ -37,6 +37,8 @@ pub trait GitBackend {
         target: DiffTarget,
         line: &DiffLineSelection,
     ) -> anyhow::Result<()>;
+    fn discard_diff_hunk(&self, path: &GitPath, hunk_index: usize) -> anyhow::Result<()>;
+    fn discard_diff_line(&self, path: &GitPath, line: &DiffLineSelection) -> anyhow::Result<()>;
     /// Current base (ours) and incoming commit (theirs) during a conflict.
     fn conflict_commits(&self) -> anyhow::Result<Option<ConflictCommits>>;
     fn conflict_versions(&self, path: &GitPath) -> anyhow::Result<Option<ConflictVersions>>;

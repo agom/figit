@@ -643,6 +643,11 @@ impl App {
                 self.execute_panel_command(CommandId::LoadFull)
             }
             KeyCode::Char('x')
+                if self.focus == Focus::Diff && (self.hunk_mode || self.line_mode) =>
+            {
+                self.execute_panel_command(CommandId::DiscardSelection)
+            }
+            KeyCode::Char('x')
                 if self.focus == Focus::Status
                     && self.status_section == StatusSection::Unstaged =>
             {
@@ -925,6 +930,12 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up if self.focus == Focus::Status => {
                 self.move_status_selection(-1, key.modifiers.contains(KeyModifiers::SHIFT));
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.focus == Focus::Diff && self.hunk_mode => {
+                self.navigate_diff_hunk(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.focus == Focus::Diff && self.hunk_mode => {
+                self.navigate_diff_hunk(-1);
             }
             KeyCode::Char('j') | KeyCode::Down if self.focus == Focus::Diff && self.line_mode => {
                 self.move_diff_line(1);

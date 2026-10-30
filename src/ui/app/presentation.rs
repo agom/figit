@@ -273,7 +273,9 @@ impl App {
                 add(HunkMode, None, "hunks");
             }
             Focus::Diff if self.three_way_view.is_none() => {
-                add(LoadFull, None, "load full diff");
+                if available.iter().any(|command| command.id == LoadFull) {
+                    add(LoadFull, None, "load full diff");
+                }
                 let staged = self.diff_target == DiffTarget::Index;
                 let label = match (staged, self.hunk_mode, self.line_mode) {
                     (true, _, true) => "unstage line",
@@ -284,7 +286,21 @@ impl App {
                     _ => "stage file",
                 };
                 add(ApplySelection, None, label);
-                add(PreviousHunk, Some("[/]"), "hunk");
+                if available
+                    .iter()
+                    .any(|command| command.id == DiscardSelection)
+                {
+                    add(DiscardSelection, None, "discard change");
+                }
+                if self.line_mode {
+                    add(LineMode, Some("j/k"), "line");
+                } else if !self.hunk_header_indices.is_empty() {
+                    add(
+                        PreviousHunk,
+                        Some(if self.hunk_mode { "j/k" } else { "[/]" }),
+                        "hunk",
+                    );
+                }
                 if self.historical_commit.is_some() {
                     add(DiffMode, None, "view");
                 } else if self.line_mode {
@@ -299,7 +315,10 @@ impl App {
             }
             _ => {}
         }
-        actions.truncate(if self.focus == Focus::Graph { 4 } else { 3 });
+        actions.truncate(match self.focus {
+            Focus::Graph | Focus::Diff => 4,
+            _ => 3,
+        });
         actions
     }
 
