@@ -935,6 +935,62 @@ fn index_patches_stage_and_unstage_only_the_selected_hunk() {
 }
 
 #[test]
+fn worktree_patch_discards_only_the_selected_hunk() {
+    let temp = tempfile::tempdir().expect("create hunk discard repository");
+    let path = temp.path();
+    git_ok(path, &["init", "--quiet", "--initial-branch=main"]);
+    configure_user(path);
+    let base = "first base\ncontext 1\ncontext 2\ncontext 3\ncontext 4\ncontext 5\ncontext 6\ncontext 7\ncontext 8\ncontext 9\ncontext 10\nsecond base\ncontext 11\ncontext 12\ncontext 13\ncontext 14\ncontext 15\ncontext 16\ncontext 17\ncontext 18\ncontext 19\ncontext 20\nthird base\n";
+    std::fs::write(path.join("file.txt"), base).unwrap();
+    git_ok(path, &["add", "file.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "base file"]);
+    std::fs::write(
+        path.join("file.txt"),
+        base.replace("first base", "first ours")
+            .replace("third base", "third ours"),
+    )
+    .unwrap();
+    let backend = backend::open(path).expect("open repository");
+
+    backend
+        .discard_diff_hunk(&GitPath::from("file.txt"), 0)
+        .expect("discard first hunk");
+    let worktree = std::fs::read_to_string(path.join("file.txt")).unwrap();
+    assert!(worktree.contains("first base"));
+    assert!(worktree.contains("third ours"));
+    assert!(!worktree.contains("first ours"));
+}
+
+#[test]
+fn worktree_patch_discards_only_the_selected_line() {
+    let temp = tempfile::tempdir().expect("create line discard repository");
+    let path = temp.path();
+    git_ok(path, &["init", "--quiet", "--initial-branch=main"]);
+    configure_user(path);
+    std::fs::write(path.join("file.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+    git_ok(path, &["add", "file.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "base file"]);
+    std::fs::write(
+        path.join("file.txt"),
+        "alpha\nbeta changed\ngamma changed\ndelta\n",
+    )
+    .unwrap();
+    let backend = backend::open(path).expect("open repository");
+    let selected = DiffLineSelection {
+        old_line: None,
+        new_line: Some(2),
+        text: "+beta changed".into(),
+    };
+
+    backend
+        .discard_diff_line(&GitPath::from("file.txt"), &selected)
+        .expect("discard selected added line");
+    let worktree = std::fs::read_to_string(path.join("file.txt")).unwrap();
+    assert!(!worktree.contains("beta changed"));
+    assert!(worktree.contains("gamma changed"));
+}
+
+#[test]
 fn index_patch_can_stage_and_unstage_one_changed_line() {
     let temp = tempfile::tempdir().expect("create line staging repository");
     let path = temp.path();
@@ -1337,6 +1393,73 @@ fn fetch_updates_remote_tracking_refs_and_graph() {
         .expect("main should have upstream tracking data");
     assert_eq!(tracking.upstream, "upstream/main");
     assert_eq!((tracking.ahead, tracking.behind), (1, 1));
+}
+
+#[test]
+fn fetch_prunes_remote_tracking_branches_deleted_upstream() {
+    let temp = tempfile::tempdir().expect("create fetch-prune test directory");
+    let root = temp.path();
+    let remote = root.join("remote.git");
+    let local = root.join("local");
+    git_ok(
+        root,
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    git_ok(
+        root,
+        &[
+            "init",
+            "--quiet",
+            "--initial-branch=main",
+            local.to_str().unwrap(),
+        ],
+    );
+    configure_user(&local);
+    std::fs::write(local.join("base.txt"), "base\n").unwrap();
+    git_ok(&local, &["add", "base.txt"]);
+    git_ok(&local, &["commit", "--quiet", "-m", "base"]);
+    git_ok(
+        &local,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git_ok(
+        &local,
+        &["push", "--quiet", "--set-upstream", "origin", "main"],
+    );
+    git_ok(&local, &["checkout", "--quiet", "-b", "stale"]);
+    std::fs::write(local.join("stale.txt"), "remote branch\n").unwrap();
+    git_ok(&local, &["add", "stale.txt"]);
+    git_ok(&local, &["commit", "--quiet", "-m", "stale branch"]);
+    git_ok(&local, &["push", "--quiet", "-u", "origin", "stale"]);
+    git_ok(&local, &["checkout", "--quiet", "main"]);
+
+    let backend = backend::open(&local).expect("open repository");
+    backend.fetch("origin").expect("fetch live remote branch");
+    assert!(!git_ok(
+        &local,
+        &["show-ref", "--verify", "refs/remotes/origin/stale"]
+    )
+    .is_empty());
+
+    git_ok(&local, &["push", "origin", "--delete", "stale"]);
+    backend
+        .fetch("origin")
+        .expect("fetch after remote deletion");
+    assert!(
+        !git(
+            &local,
+            &["show-ref", "--verify", "refs/remotes/origin/stale"]
+        )
+        .status
+        .success(),
+        "fetch should remove a deleted remote-tracking branch"
+    );
 }
 
 #[test]

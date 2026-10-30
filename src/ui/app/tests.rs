@@ -3,7 +3,7 @@ use super::diff::*;
 use super::diff_view::MAX_RENDERED_DIFF_LINES;
 use super::text::*;
 use super::update::UpdateAvailability;
-use super::watch::is_ignored_watch_path;
+use super::watch::watch_event_changes_state;
 use super::*;
 use crate::core::model::{BranchTracking, Commit, RefKind, RefLabel, StatusEntry};
 use crossterm::event;
@@ -158,37 +158,17 @@ fn large_diffs_are_truncated_until_explicitly_loaded() {
 }
 
 #[test]
-fn watcher_ignores_locks_but_keeps_index_and_worktree_changes() {
-    let git_dir = Path::new("/repo/.git");
-    // Read-only status no longer rewrites the index. Completed writes can be
-    // external staging operations and must be observed.
-    assert!(!is_ignored_watch_path(
-        &git_dir.join("index"),
-        Some(git_dir)
-    ));
-    assert!(is_ignored_watch_path(
-        &git_dir.join("index.lock"),
-        Some(git_dir)
-    ));
-    assert!(is_ignored_watch_path(
-        &git_dir.join("hooks/update.lock"),
-        Some(git_dir)
-    ));
-    // Real repository changes still trigger a refresh.
-    assert!(!is_ignored_watch_path(&git_dir.join("HEAD"), Some(git_dir)));
-    assert!(!is_ignored_watch_path(
-        &git_dir.join("refs/heads/main"),
-        Some(git_dir)
-    ));
-    assert!(!is_ignored_watch_path(
-        Path::new("/repo/src/main.rs"),
-        Some(git_dir)
-    ));
-    // A worktree file that merely shares the name must not be ignored.
-    assert!(!is_ignored_watch_path(
-        Path::new("/repo/index"),
-        Some(git_dir)
-    ));
+fn watcher_treats_lockfile_writes_as_state_changes() {
+    let mut lock_event =
+        notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::File));
+    lock_event
+        .paths
+        .push(PathBuf::from("/repo/.git/index.lock"));
+    assert!(watch_event_changes_state(&lock_event));
+
+    let access_event =
+        notify::Event::new(notify::EventKind::Access(notify::event::AccessKind::Read));
+    assert!(!watch_event_changes_state(&access_event));
 }
 
 #[test]
@@ -331,6 +311,39 @@ fn panel_hints_describe_available_file_and_diff_actions() {
         .panel_actions()
         .iter()
         .any(|(_, description)| *description == "pull"));
+}
+
+#[test]
+fn diff_selection_modes_use_jk_and_arrows_without_shortcut_collisions() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Diff;
+    app.set_diff_lines(parse_diff(
+        "@@ -1 +1 @@\n-old one\n+new one\n@@ -20 +20 @@\n-old two\n+new two\n",
+    ));
+    app.toggle_hunk_mode();
+    assert_eq!(app.selected_diff_hunk, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.selected_diff_hunk, 1, "j advances the selected hunk");
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.selected_diff_hunk, 0, "Up returns to the previous hunk");
+
+    app.toggle_hunk_mode();
+    app.set_diff_lines(parse_diff(
+        "@@ -1,3 +1,3 @@\n-old one\n+new one\n-old two\n+new two\n",
+    ));
+    app.toggle_line_mode();
+    let first = app.selected_diff_line;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_ne!(
+        app.selected_diff_line, first,
+        "j advances the selected line"
+    );
+    let second = app.selected_diff_line;
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_ne!(
+        app.selected_diff_line, second,
+        "Down advances the selected line"
+    );
 }
 
 #[test]
@@ -3413,7 +3426,21 @@ fn watcher_completion_catches_changes_made_during_registration() {
 }
 
 #[test]
-fn watcher_roots_skip_descendants_and_retain_external_worktree_metadata() {
+fn native_watcher_signals_atomic_git_index_and_worktree_changes() {
+    let (directory, app) = review_app("content");
+    let (sender, receiver) = mpsc::sync_channel(8);
+    let _watcher = watch::create_watcher(directory.path(), sender).unwrap();
+    std::fs::write(directory.path().join("external.txt"), "external\n").unwrap();
+    let worktree_event = receiver.recv_timeout(Duration::from_secs(8));
+    assert!(worktree_event.is_ok(), "worktree update was not observed");
+    review_git(directory.path(), &["add", "file.txt"]);
+    let index_event = receiver.recv_timeout(Duration::from_secs(8));
+    assert!(index_event.is_ok(), "Git index update was not observed");
+    drop(app);
+}
+
+#[test]
+fn watcher_roots_retain_external_git_metadata() {
     let paths = [
         "/repo/.git/refs",
         "/common/.git/worktrees/tree",
@@ -3424,14 +3451,21 @@ fn watcher_roots_skip_descendants_and_retain_external_worktree_metadata() {
         "/repo",
     ];
     let roots = watch::watch_roots(paths.into_iter().map(PathBuf::from).collect());
-    assert_eq!(
-        roots,
-        [
+    let expected = if cfg!(target_os = "macos") {
+        vec![
             PathBuf::from("/repo"),
             PathBuf::from("/repo-other"),
-            PathBuf::from("/common/.git")
+            PathBuf::from("/common/.git"),
         ]
-    );
+    } else {
+        vec![
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo-other"),
+            PathBuf::from("/common/.git"),
+            PathBuf::from("/repo/.git"),
+        ]
+    };
+    assert_eq!(roots, expected);
 }
 
 #[test]

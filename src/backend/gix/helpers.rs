@@ -329,6 +329,128 @@ pub(super) fn apply_cached_patch(workdir: &Path, patch: &[u8], reverse: bool) ->
     Ok(())
 }
 
+pub(super) fn apply_worktree_patch(workdir: &Path, patch: &[u8]) -> Result<()> {
+    for check in [true, false] {
+        let mut command = Command::new("git");
+        command.args(["apply", "--reverse", "--unidiff-zero"]);
+        if check {
+            command.arg("--check");
+        }
+        let output = command
+            .current_dir(workdir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("start git apply for worktree discard")?;
+        let mut child = output;
+        child
+            .stdin
+            .take()
+            .context("open git apply stdin")?
+            .write_all(patch)
+            .context("send selected change to git apply")?;
+        let output = child.wait_with_output().context("wait for git apply")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "could not discard selected change: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Turn one selected changed row into a minimal forward patch. Reversing this
+/// zero-context patch changes only the selected row.
+pub(super) fn extract_diff_line(diff: &str, selected: &DiffLineSelection) -> Result<Vec<u8>> {
+    let lines = diff.split_inclusive('\n').collect::<Vec<_>>();
+    let header_end = lines
+        .iter()
+        .position(|line| line.starts_with("@@"))
+        .context("diff has no text hunk")?;
+    let file_header = lines[..header_end].concat();
+    let mut old_pos = 0usize;
+    let mut new_pos = 0usize;
+    let mut target = None;
+    let mut active = false;
+    for line in lines.iter().skip(header_end) {
+        if line.starts_with("@@") {
+            let spec = line.split_whitespace().collect::<Vec<_>>();
+            let old = spec
+                .get(1)
+                .and_then(|v| v.strip_prefix('-'))
+                .context("invalid diff hunk")?;
+            let new = spec
+                .get(2)
+                .and_then(|v| v.strip_prefix('+'))
+                .context("invalid diff hunk")?;
+            old_pos = old
+                .split(',')
+                .next()
+                .unwrap_or(old)
+                .parse()
+                .context("invalid old line")?;
+            new_pos = new
+                .split(',')
+                .next()
+                .unwrap_or(new)
+                .parse()
+                .context("invalid new line")?;
+            active = true;
+            target = None;
+            continue;
+        }
+        if !active {
+            continue;
+        }
+        let raw = line.trim_end_matches(['\n', '\r']);
+        if raw.starts_with('\\') {
+            continue;
+        }
+        let old_line = if raw.starts_with('+') {
+            None
+        } else {
+            Some(old_pos as u32)
+        };
+        let new_line = if raw.starts_with('-') {
+            None
+        } else {
+            Some(new_pos as u32)
+        };
+        if raw.starts_with(' ') {
+            old_pos += 1;
+            new_pos += 1;
+        } else if raw.starts_with('-') {
+            old_pos += 1;
+        } else if raw.starts_with('+') {
+            new_pos += 1;
+        } else {
+            active = false;
+            continue;
+        }
+        if old_line == selected.old_line
+            && new_line == selected.new_line
+            && raw.get(1..) == selected.text.get(1..)
+        {
+            target = Some((raw.to_string(), old_pos, new_pos));
+            break;
+        }
+    }
+    let (change, old_after, new_after) = target.context("selected diff line is stale")?;
+    let old_start = old_after.saturating_sub(usize::from(change.starts_with('-')));
+    let new_start = new_after.saturating_sub(usize::from(change.starts_with('+')));
+    let old_count = usize::from(change.starts_with('-'));
+    let new_count = usize::from(change.starts_with('+'));
+    let mut patch = file_header;
+    patch.push_str(&format!(
+        "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+    ));
+    patch.push_str(&change);
+    patch.push('\n');
+    Ok(patch.into_bytes())
+}
+
 pub(super) fn git_output_with_input(
     workdir: &Path,
     args: &[&str],

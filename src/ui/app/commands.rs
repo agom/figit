@@ -18,6 +18,7 @@ pub(super) enum CommandId {
     ApplySelection,
     ApplyFile,
     Discard,
+    DiscardSelection,
     FileMode,
     HunkMode,
     LineMode,
@@ -320,9 +321,25 @@ impl App {
                         && self.diff_path.is_some()
                         && !self.details_loading
                     {
-                        if hunks {
-                            add(PreviousHunk, "Previous hunk", "[", "");
-                            add(NextHunk, "Next hunk", "]", "");
+                        if !historical
+                            && self.diff_target == DiffTarget::Worktree
+                            && (self.hunk_mode || self.line_mode)
+                        {
+                            add(
+                                DiscardSelection,
+                                "Discard selected change",
+                                "x",
+                                "revert|worktree",
+                            );
+                        }
+                        if hunks && !self.line_mode {
+                            if self.hunk_mode {
+                                add(PreviousHunk, "Previous hunk", "k", "up|j/k");
+                                add(NextHunk, "Next hunk", "j", "down|j/k");
+                            } else {
+                                add(PreviousHunk, "Previous hunk", "[", "up");
+                                add(NextHunk, "Next hunk", "]", "down");
+                            }
                         }
                         if !self.line_mode {
                             add(DiffMode, "Change diff view", "v", "unified|side by side");
@@ -481,6 +498,7 @@ impl App {
             }
             ApplyFile => self.apply_selected_file_changes(),
             Discard => self.open_discard_popup(),
+            DiscardSelection => self.discard_selected_diff_change(),
             FileMode => self.select_file_mode(),
             HunkMode => self.toggle_hunk_mode(),
             LineMode => self.toggle_line_mode(),

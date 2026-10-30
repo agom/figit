@@ -66,6 +66,7 @@ impl App {
         let mut last_frame = Instant::now();
         loop {
             self.poll_repository_watcher();
+            self.poll_visible_file_metadata();
             self.poll_remote_operation();
             self.poll_local_job();
             self.poll_update();

@@ -96,11 +96,16 @@ impl App {
             match &completed.result {
                 Ok(outcome) => {
                     let outcome = outcome.clone();
+                    let completed_rebase = matches!(&outcome, RebaseOutcome::Completed);
                     completed.refresh(app);
                     app.graph_action = None;
                     app.graph_action_return_focus = None;
                     app.rebase_plan = None;
                     app.apply_rebase_outcome(outcome);
+                    if completed_rebase {
+                        app.select_head_commit();
+                        app.focus = Focus::Graph;
+                    }
                 }
                 Err(error) => {
                     let error = error.clone();
@@ -170,6 +175,8 @@ impl App {
                     completed.refresh(app);
                     app.rebase_edit = None;
                     app.rebase_paused = false;
+                    app.select_head_commit();
+                    app.focus = Focus::Graph;
                 }
                 Err(error) => app.show_rebase_error(error.clone()),
             },

@@ -1026,6 +1026,18 @@ impl super::GitBackend for GixBackend {
         apply_cached_patch(&self.workdir, &patch, target == DiffTarget::Index)
     }
 
+    fn discard_diff_hunk(&self, path: &GitPath, hunk_index: usize) -> Result<()> {
+        let diff = self.diff(path, DiffTarget::Worktree)?;
+        let patch = extract_diff_hunk(&diff, hunk_index)?;
+        apply_worktree_patch(&self.workdir, &patch)
+    }
+
+    fn discard_diff_line(&self, path: &GitPath, line: &DiffLineSelection) -> Result<()> {
+        let diff = self.diff(path, DiffTarget::Worktree)?;
+        let patch = extract_diff_line(&diff, line)?;
+        apply_worktree_patch(&self.workdir, &patch)
+    }
+
     fn apply_diff_line(
         &self,
         path: &GitPath,
@@ -2386,7 +2398,7 @@ impl super::GitBackend for GixBackend {
     }
 
     fn fetch(&self, remote: &str) -> Result<()> {
-        run_git(&self.workdir, ["fetch", remote])
+        run_git(&self.workdir, ["fetch", "--prune", remote])
     }
 
     fn push(&self, remote: &str, branch: &str, mode: usize) -> Result<()> {

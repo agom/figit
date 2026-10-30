@@ -308,6 +308,9 @@ impl App {
                         None
                     };
                     completed.refresh(app);
+                    if return_focus == Some(Focus::Graph) {
+                        app.focus = Focus::Graph;
+                    }
                     app.graph_action = None;
                     app.graph_action_return_focus = None;
                     app.undo_options.clear();
@@ -670,8 +673,7 @@ impl App {
     }
 
     /// Scroll the diff to the previous/next hunk based on the current scroll
-    /// position, without changing the staging selection. This lets `[`/`]`
-    /// navigate hunks in a read-only commit diff as well.
+    /// position, without changing the staging selection.
     pub(super) fn jump_diff_hunk(&mut self, delta: i32) {
         if self.hunk_header_indices.is_empty() {
             return;
@@ -1017,6 +1019,44 @@ impl App {
             self.selected_statuses.clear();
             self.selected_statuses.insert(index);
         }
+        self.refresh_diff();
+    }
+
+    pub(super) fn discard_selected_diff_change(&mut self) {
+        if self.historical_commit.is_some() || self.diff_target != DiffTarget::Worktree {
+            return;
+        }
+        let Some(path) = self.diff_path.clone() else {
+            return;
+        };
+        let Some(backend) = self.backend.as_ref() else {
+            return;
+        };
+        let result = if self.line_mode {
+            self.selected_diff_line
+                .and_then(|index| self.diff_lines.get(index))
+                .filter(|line| matches!(line.kind, DiffKind::Added | DiffKind::Removed))
+                .map(|line| {
+                    backend.discard_diff_line(
+                        &path,
+                        &DiffLineSelection {
+                            old_line: line.old_no,
+                            new_line: line.new_no,
+                            text: line.text.clone(),
+                        },
+                    )
+                })
+                .unwrap_or_else(|| Err(anyhow::anyhow!("select an added or removed line first")))
+        } else if self.hunk_mode {
+            backend.discard_diff_hunk(&path, self.selected_diff_hunk)
+        } else {
+            return;
+        };
+        if let Err(error) = result {
+            self.show_git_error(error.to_string());
+            return;
+        }
+        self.refresh_status();
         self.refresh_diff();
     }
 

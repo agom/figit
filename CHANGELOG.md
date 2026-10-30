@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 - 2026-10-30
+
+### Improved
+
+- Navigate staged and unstaged hunk selections with `j`/`k` or the arrow keys, and discard individual unstaged hunks or lines from the diff.
+- Return focus to the commit graph after completed graph and rebase operations.
+- Refresh visible diffs after rapid external saves, including on macOS filesystems that do not reliably deliver native change events.
+- Prune deleted remote-tracking branches when fetching.
+
+### Fixed
+
+- Preserve color assertions in PTY tests regardless of the caller's `NO_COLOR` environment.
+- Keep file and line selection navigation separate in the contextual command picker.
+
 ## 0.1.0 - 2026-10-28
 
 ### Highlights

@@ -74,6 +74,15 @@ impl App {
                 })
             })
             .unwrap_or(3);
+        self.visible_file_fingerprint = self.diff_path.as_ref().map(|path| {
+            let fingerprint = self.backend.as_ref().and_then(|backend| {
+                let relative = path.to_path_buf().ok()?;
+                let metadata =
+                    std::fs::metadata(backend.working_directory().join(relative)).ok()?;
+                Some((metadata.modified().ok()?, metadata.len()))
+            });
+            (path.clone(), fingerprint)
+        });
         let diff_result = self
             .status
             .get(self.selected_status)

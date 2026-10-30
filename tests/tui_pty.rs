@@ -77,6 +77,7 @@ impl Tui {
         command.arg(repository);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        command.env_remove("NO_COLOR");
         for (key, value) in env {
             command.env(key, value);
         }
@@ -948,9 +949,9 @@ fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
         screen.contains("Space stage hunk") && screen.contains("hunk selection"),
         "the focused diff should show its mode and primary action:\n{screen}"
     );
-    tui.send(b"[");
+    tui.send(b"j");
     tui.wait_for_text_background("context 18", selected);
-    tui.send(b"]");
+    tui.send(b"k");
     tui.wait_for_text_background("context 3", selected);
     {
         let screen = tui.screen.lock().expect("screen lock");
@@ -1112,6 +1113,42 @@ fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
     assert!(!screen.contains("1/2 staged"));
     assert!(!screen.contains("1/2 unstaged"));
 
+    tui.quit();
+}
+
+#[test]
+fn hunk_mode_navigates_with_jk_and_discards_only_the_selected_hunk() {
+    let repository = init_hunk_staging_repository();
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("2/2");
+    tui.send(b"h");
+    tui.wait_for("hunk selection");
+    tui.send(b"j");
+    tui.wait_for("▸       @@ -20");
+    tui.send(b"x");
+    tui.wait_for("1/1 hunk");
+
+    let worktree = std::fs::read_to_string(repository.path().join("file.txt")).unwrap();
+    assert!(worktree.contains("first ours"));
+    assert!(worktree.contains("third base"));
+    assert!(!worktree.contains("third ours"));
+    tui.quit();
+}
+
+#[test]
+fn line_mode_discards_only_the_selected_added_line() {
+    let repository = init_hunk_staging_repository();
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("2/2");
+    tui.send(b"l");
+    tui.wait_for("line selection");
+    tui.send(b"j");
+    tui.send(b"x");
+    tui.wait_for("+1 -2");
+
+    let worktree = std::fs::read_to_string(repository.path().join("file.txt")).unwrap();
+    assert!(!worktree.contains("first ours"));
+    assert!(worktree.contains("third ours"));
     tui.quit();
 }
 
@@ -1923,9 +1960,10 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
     );
     let pre_edit_head = git_ok(repository.path(), &["rev-parse", "HEAD"]);
 
-    // Reload returns focus to Status. Select the rewritten middle commit and
-    // confirm `s` to stop the next interactive rebase there for editing.
-    tui.send(b"\t\x1b[B");
+    // A completed reword returns focus to the Graph with HEAD selected. Move
+    // to the rewritten middle commit and stop the next rebase there for editing.
+    tui.wait_for_title_focus("Graph");
+    tui.send(b"\x1b[B");
     tui.send(b"e");
     tui.wait_for("Rebase and stop to edit commit");
     tui.send(b"\r");
@@ -1950,10 +1988,11 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
         git_ok(repository.path(), &["show", "-s", "--format=%s", "HEAD"]),
         "renamed commit"
     );
-    tui.send(b"\x01"); // Ctrl+A aborts globally from the Status panel.
+    tui.send(b"\x01"); // Ctrl+A aborts the active rebase.
     tui.wait_for("Abort rebase");
     tui.send(b"\r");
     tui.wait_for_operation("Abort rebase");
+    tui.wait_for_title_focus("Graph");
     assert_eq!(
         git_ok(repository.path(), &["rev-parse", "HEAD"]),
         pre_edit_head
@@ -1972,7 +2011,7 @@ fn reword_and_edit_shortcuts_execute_interactive_rebase_after_confirmation() {
 
     // Start the edit again, split the staged two-file commit into two commits,
     // and continue with Ctrl+C.
-    tui.send(b"\t\x1b[B");
+    tui.send(b"\x1b[B");
     tui.send(b"e");
     tui.wait_for("Rebase and stop to edit commit");
     tui.send(b"\r");
