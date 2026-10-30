@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 - 2026-10-30
+
+### Improved
+
+- Show the installed version in the footer and the available version when an update is found; check for updates at startup and hourly.
+- Show aggregate added and removed line counts in staging panels and commit details.
+- Preserve syntax highlighting while horizontally scrolling diffs.
+
 ## 0.1.2 - 2026-10-30
 
 ### Improved

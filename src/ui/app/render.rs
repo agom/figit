@@ -969,6 +969,8 @@ impl App {
         };
         let short: String = commit.id.chars().take(7).collect();
         let date = fmt_date(commit.committer_timestamp, commit.committer_timezone_offset);
+        let indices: Vec<usize> = (0..self.status.len()).collect();
+        let totals = self.diff_totals(&indices, false);
         let mut lines = vec![
             Line::from(vec![
                 Span::styled(format!("{short} "), Style::default().fg(Color::DarkGray)),
@@ -1007,16 +1009,42 @@ impl App {
         let viewport = area.height.saturating_sub(2) as usize;
         let scroll =
             (self.details_scroll as usize).min(visual_lines.saturating_sub(viewport)) as u16;
+        let focused = self.focus == Focus::Details;
+        let title_style = Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(if focused {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        let mut title = Line::from(Span::styled("Commit Details", title_style));
+        if let Some((added, removed)) = totals {
+            title.push_span(Span::raw(" "));
+            title.push_span(Span::styled(
+                format!("+{added}"),
+                Style::default().fg(Color::Green),
+            ));
+            title.push_span(Span::raw(" "));
+            title.push_span(Span::styled(
+                format!("-{removed}"),
+                Style::default().fg(Color::Red),
+            ));
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(if focused {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.border_color())
+            })
+            .title(title);
         f.render_widget(
             Paragraph::new(lines)
                 .scroll((scroll, 0))
                 .wrap(Wrap { trim: false })
-                .block(self.panel_footer(
-                    self.panel_block("Commit Details", self.focus == Focus::Details),
-                    area,
-                    self.focus == Focus::Details,
-                    None,
-                )),
+                .block(self.panel_footer(block, area, focused, None)),
             area,
         );
         if visual_lines > viewport {
@@ -1795,7 +1823,26 @@ impl App {
         pad_colored_lines(&mut lines, usize::from(area.width.saturating_sub(2)));
         let focused = self.focus == Focus::Status
             && (self.historical_commit.is_some() || self.status_section == section);
-        let title = format!("{title} ({})", indices.len());
+        let title_text = format!("{title} ({})", indices.len());
+        let title_style = Style::default().fg(color).add_modifier(if focused {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
+        let mut title = Line::from(Span::styled(title_text, title_style));
+        if let Some((added, removed)) = self.diff_totals(indices, section == StatusSection::Staged)
+        {
+            title.push_span(Span::raw(" "));
+            title.push_span(Span::styled(
+                format!("+{added}"),
+                Style::default().fg(Color::Green),
+            ));
+            title.push_span(Span::raw(" "));
+            title.push_span(Span::styled(
+                format!("-{removed}"),
+                Style::default().fg(Color::Red),
+            ));
+        }
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(if focused {
@@ -1803,14 +1850,7 @@ impl App {
             } else {
                 self.border_color()
             })
-            .title(Span::styled(
-                title,
-                Style::default().fg(color).add_modifier(if focused {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-            ));
+            .title(title);
         let block = self.panel_footer(block, area, focused, None);
         let viewport = area.height.saturating_sub(2) as usize;
         let scroll = self.status_list_scroll(indices, area);
@@ -1834,6 +1874,19 @@ impl App {
                 &mut state,
             );
         }
+    }
+
+    fn diff_totals(&self, indices: &[usize], staged: bool) -> Option<(usize, usize)> {
+        if indices.is_empty() {
+            return None;
+        }
+        indices
+            .iter()
+            .try_fold((0, 0), |(added_total, removed_total), &index| {
+                let path = &self.status.get(index)?.path;
+                let (added, removed) = self.diff_stats.get(&(path.clone(), staged)).copied()?;
+                Some((added_total + added, removed_total + removed))
+            })
     }
 
     pub(super) fn file_status_line(
@@ -2248,7 +2301,38 @@ impl App {
         line
     }
 
-    pub(super) fn status_line(&self) -> Line<'_> {
+    pub(super) fn status_line(&self) -> Line<'static> {
+        let content = self.status_line_content();
+        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let width = usize::from(self.viewport_width);
+        let version_width = Line::from(version.as_str()).width();
+        // Keep the actionable modal hints readable on very narrow terminals.
+        // Ratatui will clip to the actual frame width when rendering.
+        if width > 0 && width < version_width + 12 {
+            return clip_line(&content, usize::MAX);
+        }
+        let separator_width = 1;
+        let content_width = if width == 0 {
+            usize::MAX
+        } else {
+            width.saturating_sub(version_width + separator_width)
+        };
+        let content = clip_line(&content, content_width);
+        let mut line = content;
+        if width > 0 {
+            let padding = content_width.saturating_sub(line.width());
+            if padding > 0 {
+                line.push_span(Span::raw(" ".repeat(padding)));
+            }
+            line.push_span(Span::raw(" "));
+        } else if !line.spans.is_empty() {
+            line.push_span(Span::raw(" "));
+        }
+        line.push_span(Span::styled(version, Style::default().fg(Color::DarkGray)));
+        line
+    }
+
+    fn status_line_content(&self) -> Line<'_> {
         let branch = self
             .graph
             .head_name
@@ -2417,8 +2501,8 @@ impl App {
             )]);
         }
         let update_message = match &self.update_status {
-            UpdateStatus::Available => Some((
-                "Update available • U install • restart afterward".to_string(),
+            UpdateStatus::Available(version) => Some((
+                format!("Update {version} available • U install • restart afterward"),
                 Color::LightYellow,
             )),
             UpdateStatus::Installing => Some((
@@ -2465,6 +2549,7 @@ impl App {
                 Style::default().fg(Color::DarkGray),
             ));
         }
-        self.context_hints(self.viewport_width as usize)
+        let version_width = Line::from(format!("v{}", env!("CARGO_PKG_VERSION"))).width();
+        self.context_hints(usize::from(self.viewport_width).saturating_sub(version_width + 1))
     }
 }

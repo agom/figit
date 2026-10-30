@@ -88,11 +88,11 @@ fn update_notifications_offer_install_and_restart() {
     app.update_tx
         .send(UpdateEvent::Check {
             manual: false,
-            result: Ok(UpdateAvailability::Available),
+            result: Ok(UpdateAvailability::Available("0.2.0".into())),
         })
         .unwrap();
     app.poll_update();
-    assert_eq!(app.update_status, UpdateStatus::Available);
+    assert_eq!(app.update_status, UpdateStatus::Available("0.2.0".into()));
     assert!(app.status_line().to_string().contains("U install"));
 
     app.update_tx.send(UpdateEvent::Install(Ok(true))).unwrap();

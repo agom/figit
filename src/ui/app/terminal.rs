@@ -38,6 +38,8 @@ impl App {
             terminal.draw(|frame| self.draw(frame))?;
             crate::profile::mark("first frame");
             self.start_update_check(false);
+            self.update_check_deadline =
+                Some(Instant::now() + super::update::UPDATE_CHECK_INTERVAL);
             self.start_repository_watcher();
             if self.loading {
                 self.refresh.deadline = Some(Instant::now());
@@ -69,6 +71,14 @@ impl App {
             self.poll_visible_file_metadata();
             self.poll_remote_operation();
             self.poll_local_job();
+            if self
+                .update_check_deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.start_update_check(false);
+                self.update_check_deadline =
+                    Some(Instant::now() + super::update::UPDATE_CHECK_INTERVAL);
+            }
             self.poll_update();
             self.poll_repository_refresh();
             self.poll_graph_page();
