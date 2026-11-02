@@ -2543,7 +2543,7 @@ impl App {
                 Style::default().fg(Color::DarkGray),
             ));
         }
-        if self.watcher_poll_deadline.is_some() {
+        if self.watcher_error.is_some() && self.watcher_poll_deadline.is_some() {
             return Line::from(Span::styled(
                 format!("figit | {branch} | Auto-refresh: polling every 5s"),
                 Style::default().fg(Color::DarkGray),
