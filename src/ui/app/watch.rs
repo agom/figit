@@ -29,7 +29,11 @@ impl App {
             Ok(watcher) => {
                 self.repository_watcher = Some(watcher);
                 self.watcher_error = None;
-                self.watcher_poll_deadline = None;
+                // macOS's PollWatcher can miss changes on temporary and
+                // network-backed worktrees even after setup succeeds. Keep a
+                // slow snapshot poll as a safety net for those missed events.
+                self.watcher_poll_deadline =
+                    cfg!(target_os = "macos").then(|| Instant::now() + POLL_INTERVAL);
                 // The first snapshot may predate registration. Rescan once to
                 // catch writes made before their directories were watched.
                 self.refresh.deadline = Some(Instant::now());

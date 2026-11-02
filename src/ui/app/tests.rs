@@ -3405,7 +3405,11 @@ fn watcher_completion_catches_changes_made_during_registration() {
         "watcher setup failed: {:?}",
         app.watcher_error
     );
-    assert!(app.watcher_poll_deadline.is_none());
+    if cfg!(target_os = "macos") {
+        assert!(app.watcher_poll_deadline.is_some());
+    } else {
+        assert!(app.watcher_poll_deadline.is_none());
+    }
     // A pending filesystem event must not postpone the immediate catch-up.
     let _ = app.watch_tx.try_send(());
     app.poll_repository_refresh();
