@@ -244,7 +244,7 @@ impl Tui {
                         && cell.bold()
                         && (matches!(
                             cell.bgcolor(),
-                            vt100::Color::Rgb(48, 54, 68) | vt100::Color::Rgb(228, 232, 237)
+                            vt100::Color::Rgb(48, 54, 68) | vt100::Color::Rgb(225, 207, 181)
                         ) || cell.underline()))
                     .then_some(())
                 })
@@ -3514,7 +3514,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                 let col = |text: &str| terminal_columns(&line[..line.find(text).unwrap()]) as u16;
                 let cell = |column| screen.cell(row as u16, column).unwrap();
                 let expected_bg = match theme {
-                    "light" => vt100::Color::Rgb(228, 232, 237),
+                    "light" => vt100::Color::Rgb(225, 207, 181),
                     "mono" => vt100::Color::Default,
                     _ => vt100::Color::Rgb(48, 54, 68),
                 };
@@ -3530,7 +3530,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                     assert_eq!(
                         cell(col("+1")).fgcolor(),
                         if theme == "light" {
-                            vt100::Color::Rgb(28, 110, 52)
+                            vt100::Color::Rgb(53, 81, 30)
                         } else {
                             vt100::Color::Idx(2)
                         }
@@ -3538,7 +3538,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                     assert_eq!(
                         cell(col("-1")).fgcolor(),
                         if theme == "light" {
-                            vt100::Color::Rgb(170, 43, 55)
+                            vt100::Color::Rgb(132, 26, 39)
                         } else {
                             vt100::Color::Idx(1)
                         }
@@ -3593,7 +3593,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                 let cap = screen.cell(row as u16, cap_column as u16).unwrap();
                 let label = screen.cell(row as u16, cap_column as u16 + 2).unwrap();
                 let expected_bg = match theme {
-                    "light" => vt100::Color::Rgb(228, 232, 237),
+                    "light" => vt100::Color::Rgb(225, 207, 181),
                     "mono" => vt100::Color::Default,
                     _ => vt100::Color::Rgb(48, 54, 68),
                 };
