@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640">
+<g transform="translate(0 0)"><g transform="rotate(0 80 80)"><path fill="#599283" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#f35333" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(160 0)"><g transform="rotate(90 80 80)"><path fill="#f35333" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#53295b" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(320 0)"><g transform="rotate(180 80 80)"><path fill="#ebd6c3" d="M0 0h160v160H0z"/><path fill="#53295b" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#e98515" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(480 0)"><g transform="rotate(270 80 80)"><path fill="#53295b" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#599283" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(0 160)"><g transform="rotate(270 80 80)"><path fill="#ebd6c3" d="M0 0h160v160H0z"/><path fill="#e98515" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#599283" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(160 160)"><g transform="rotate(180 80 80)"><path fill="#53295b" d="M0 0h160v160H0z"/><path fill="#f35333" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#ebd6c3" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(320 160)"><g transform="rotate(90 80 80)"><path fill="#e98515" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#53295b" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(480 160)"><g transform="rotate(0 80 80)"><path fill="#599283" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#f35333" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(0 320)"><g transform="rotate(90 80 80)"><path fill="#e98515" d="M0 0h160v160H0z"/><path fill="#f35333" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#ebd6c3" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(160 320)"><g transform="rotate(0 80 80)"><path fill="#ebd6c3" d="M0 0h160v160H0z"/><path fill="#599283" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#53295b" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(320 320)"><g transform="rotate(270 80 80)"><path fill="#f35333" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#e98515" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(480 320)"><g transform="rotate(180 80 80)"><path fill="#53295b" d="M0 0h160v160H0z"/><path fill="#e98515" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#ebd6c3" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(0 480)"><g transform="rotate(180 80 80)"><path fill="#53295b" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#e98515" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(160 480)"><g transform="rotate(270 80 80)"><path fill="#599283" d="M0 0h160v160H0z"/><path fill="#f35333" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#ebd6c3" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(320 480)"><g transform="rotate(0 80 80)"><path fill="#ebd6c3" d="M0 0h160v160H0z"/><path fill="#53295b" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#599283" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+<g transform="translate(480 480)"><g transform="rotate(90 80 80)"><path fill="#f35333" d="M0 0h160v160H0z"/><path fill="#ebd6c3" d="M0 0h160A160 160 0 0 1 0 160Z"/><path fill="#6f8935" d="M0 0h80A80 80 0 0 1 0 80Z"/></g></g>
+</svg>

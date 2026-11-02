@@ -96,9 +96,14 @@ terminal and a `git` process, so the harness caps concurrency
 ## Website
 
 `figit.dev` is the static site in `site/`. `.github/workflows/pages.yml` deploys
-it when `site/` changes and after each successful release, filling the version
+it when `site/` or `assets/` changes and after each successful release, filling the version
 badge from the latest release tag. Preview it locally with
 `python3 -m http.server -d site`.
+
+The README and website share the images in `assets/`. `site/assets` is a symlink
+to that directory, so local previews use the same files. Deployment follows the
+symlink to assemble a self-contained website artifact; update images only in
+`assets/`.
 
 ## Tests
 
@@ -135,7 +140,9 @@ cargo test --test tui_pty -- --ignored --nocapture generate_readme_screenshots
 
 This requires `rsvg-convert` (librsvg) and a Nerd Font, plus a `test_repo/`
 checkout (see `fixtures/tui-e2e.md` for how to build one). It rewrites
-`assets/screenshot*.png`.
+`assets/screenshot*.png`. Each scene is captured in dark and light terminal
+themes; light variants use the `-light.png` suffix. The website theme selector
+updates both the page palette and the screenshot set.
 
 ## Commits and pull requests
 

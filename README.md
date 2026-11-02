@@ -9,48 +9,6 @@
 [![License: MIT](https://img.shields.io/github/license/agom/figit?color=a6e3a1)](LICENSE)
 [![GitHub release downloads](https://img.shields.io/github/downloads/agom/figit/total?color=cba6f7)](https://github.com/agom/figit/releases)
 
-A visual Git workspace for your terminal.
-
-`figit` renders a multi-lane DAG (merge topology, branch colors, refs) and puts
-useful workflows on top of it: file/hunk/line staging, commit/amend/fixup,
-branch and tag actions, fetch/pull/push, stash management, interactive rebase,
-and conflict resolution.
-
-<p align="center">
-  <img src="assets/screenshot.png" alt="figit showing a repository with staged and unstaged changes" width="880">
-</p>
-
-Inspecting a commit shows its details and syntax-highlighted diff:
-
-<p align="center">
-  <img src="assets/screenshot-commit.png" alt="figit showing a commit's details and diff" width="880">
-</p>
-
-Resolve merge conflicts with an aligned Ours / Theirs / Result view. The active
-conflict is highlighted; `[`/`]` jumps between conflicts. With the resolver
-focused, `o`/`t` previews that conflict’s Ours/Theirs version, `Enter` confirms, and `Esc` cancels the preview.
-`b` explicitly previews restoring the **entire file** from Base. Use `e` for an
-external editor or `:` for resolver commands. Arrow keys, mouse scrolling, and
-Page Up/Down keep all three panes synchronized; `z` maximizes the resolver.
-
-The file lists stay compact while resolving conflicts:
-
-<p align="center">
-  <img src="assets/screenshot-conflict.png" alt="figit resolving a merge conflict with a three-way view" width="880">
-</p>
-
-Plan an interactive rebase — reorder, reword, squash, fixup, or drop:
-
-<p align="center">
-  <img src="assets/screenshot-rebase.png" alt="figit planning an interactive rebase" width="880">
-</p>
-
-Manage stashes without leaving the app:
-
-<p align="center">
-  <img src="assets/screenshot-stash.png" alt="figit's stash manager" width="880">
-</p>
-
 ## Install
 
 Prebuilt binaries support macOS and Linux on Intel/AMD64 and ARM64. Requires
@@ -69,6 +27,65 @@ cargo install --git https://github.com/agom/figit.git
 
 Press `U` to check for or install an update, then restart.
 Source and package-manager installations use their own update mechanism.
+
+## Overview
+
+A visual Git workspace for your terminal.
+
+`figit` renders a multi-lane DAG (merge topology, branch colors, refs) and puts
+useful workflows on top of it: file/hunk/line staging, commit/amend/fixup,
+branch and tag actions, fetch/pull/push, stash management, interactive rebase,
+and conflict resolution.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
+    <img src="assets/screenshot.png" alt="figit showing a repository with staged and unstaged changes" width="880">
+  </picture>
+</p>
+
+Inspecting a commit shows its details and syntax-highlighted diff:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-commit-light.png">
+    <img src="assets/screenshot-commit.png" alt="figit showing a commit's details and diff" width="880">
+  </picture>
+</p>
+
+Resolve merge conflicts with an aligned Ours / Theirs / Result view. The active
+conflict is highlighted; `[`/`]` jumps between conflicts. With the resolver
+focused, `o`/`t` previews that conflict’s Ours/Theirs version, `Enter` confirms, and `Esc` cancels the preview.
+`b` explicitly previews restoring the **entire file** from Base. Use `e` for an
+external editor or `:` for resolver commands. Arrow keys, mouse scrolling, and
+Page Up/Down keep all three panes synchronized; `z` maximizes the resolver.
+
+The file lists stay compact while resolving conflicts:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-conflict-light.png">
+    <img src="assets/screenshot-conflict.png" alt="figit resolving a merge conflict with a three-way view" width="880">
+  </picture>
+</p>
+
+Plan an interactive rebase — reorder, reword, squash, fixup, or drop:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-rebase-light.png">
+    <img src="assets/screenshot-rebase.png" alt="figit planning an interactive rebase" width="880">
+  </picture>
+</p>
+
+Manage stashes without leaving the app:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-stash-light.png">
+    <img src="assets/screenshot-stash.png" alt="figit's stash manager" width="880">
+  </picture>
+</p>
 
 ## Usage
 

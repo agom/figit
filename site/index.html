@@ -3,9 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>figit: a git tui</title>
+<title>figit — A visual Git workspace for your terminal.</title>
 <meta name="description" content="A visual Git workspace for your terminal.">
-<link rel="icon" href="figit.svg" type="image/svg+xml">
+<link rel="icon" href="assets/figit.svg" type="image/svg+xml">
+<script>
+  try {
+    const theme = localStorage.getItem('figit-theme');
+    if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  } catch {}
+</script>
 <style>
   :root {
     --paper: #ebd6c3;
@@ -16,21 +22,38 @@
     --orange: #e98515;
     --sage: #599283;
     --olive: #6f8935;
+    color-scheme: light;
+    --page: #cfb298; --text: var(--ink); --link: var(--plum);
+    --pattern-opacity: .20; --install-bg: #25102e;
+    --install-shadow: 0 12px 34px rgba(58, 31, 63, .2);
+    --shot-border: rgba(83, 41, 91, .18); --shot-shadow: 0 20px 55px rgba(58, 31, 63, .22);
+    --selected-bg: var(--ink); --selected-fg: var(--card); --footer-opacity: .7;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; }
   body {
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
       Helvetica, Arial, sans-serif;
-    color: var(--ink);
-    background: var(--paper);
+    color: var(--text);
+    background: var(--page);
+    position: relative;
+    isolation: isolate;
     display: grid;
     place-items: center;
     padding: 2.5rem 1.5rem;
   }
-  main { width: min(960px, 100%); text-align: center; }
+  main { position: relative; z-index: 1; width: min(1120px, 100%); text-align: center; }
+  .geometry {
+    position: absolute; inset: 0; pointer-events: none; z-index: 0;
+    background-image: url("pattern.svg");
+    background-size: 640px 640px;
+    opacity: var(--pattern-opacity);
+  }
+  @media (max-width: 640px) {
+    .geometry { background-size: 400px 400px; }
+  }
   .logo {
-    width: 128px; height: 128px;
+    width: 88px; height: 88px;
     display: block; margin: 0 auto 1.25rem;
     filter: drop-shadow(0 8px 22px rgba(83, 41, 91, 0.18));
   }
@@ -39,7 +62,7 @@
     line-height: 1;
     letter-spacing: -0.03em;
     margin: 0;
-    color: var(--plum);
+    color: var(--link);
   }
   .tagline {
     font-size: 1.1rem;
@@ -50,7 +73,7 @@
   }
   .pill {
     display: inline-block;
-    margin-top: 1.5rem;
+    margin-top: 1rem;
     padding: 0.3rem 0.75rem;
     border-radius: 999px;
     background: var(--sage);
@@ -68,11 +91,11 @@
     gap: 0.8rem;
     padding: 1rem 1.15rem;
     border-radius: 12px;
-    background: var(--ink);
-    color: var(--card);
+    background: var(--install-bg);
+    color: #fff5e9;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.9rem;
-    box-shadow: 0 12px 34px rgba(58, 31, 63, 0.2);
+    box-shadow: var(--install-shadow);
     text-align: left;
   }
   .install .prompt { color: var(--sage); user-select: none; }
@@ -99,44 +122,83 @@
     margin-top: 2rem;
   }
   a {
-    color: var(--plum);
+    color: var(--link);
     text-decoration: none;
     padding-bottom: 2px;
     border-bottom: 2px solid transparent;
     transition: border-color 0.15s ease;
   }
   a:hover { border-color: var(--orange); }
-  .shot-link { display: block; margin-top: 3rem; }
+  :focus-visible { outline: 3px solid var(--orange); outline-offset: 5px; }
+  .gallery { margin-top: 3rem; text-align: left; }
+  .gallery h2 { font-size: clamp(1.4rem, 4vw, 2rem); margin: 0 0 1rem; letter-spacing: -0.03em; text-align: center; }
+  .gallery-tabs { display: flex; flex-wrap: wrap; justify-content: center; gap: .5rem; margin-bottom: 1rem; }
+  .gallery-tabs button {
+    font: inherit; color: inherit; background: transparent; border: 1px solid #886b8b;
+    border-radius: 999px; padding: .6rem 1rem; cursor: pointer;
+  }
+  .gallery-tabs button[aria-selected="true"] { background: var(--selected-bg); color: var(--selected-fg); border-color: var(--selected-bg); }
+  .gallery-tabs button:hover { border-color: var(--orange); }
+  .gallery figure { margin: 0; }
+  .gallery figure[hidden], .gallery-tabs[hidden] { display: none; }
+  .shot-link { display: block; padding: 0; border: 0; }
+  .gallery figure + figure { margin-top: 2rem; }
+  .gallery.enhanced figure + figure { margin-top: 0; }
+  .install-note { font-size: .85rem; margin: .85rem 0 0; }
+  .contact { margin-top: 3.5rem; padding: 2rem 0; border-top: 1px solid #886b8b; }
+  .contact h2 { margin: 0; font-size: 1.5rem; }
+  .contact p { line-height: 1.6; }
+  @media (max-width: 640px) {
+    body { padding: 1.5rem 1rem; }
+    .gallery-tabs { gap: .4rem; }
+    .gallery-tabs button { font-size: .8rem; padding: .55rem .7rem; }
+    .install { gap: .5rem; padding: .8rem; font-size: .78rem; }
+  }
   .shot {
     display: block;
     width: 100%;
     height: auto;
     border-radius: 12px;
-    border: 1px solid rgba(83, 41, 91, 0.18);
-    box-shadow: 0 20px 55px rgba(58, 31, 63, 0.22);
+    border: 1px solid var(--shot-border);
+    box-shadow: var(--shot-shadow);
   }
-  footer { margin-top: 3rem; font-size: 0.8rem; opacity: 0.55; }
-  .shapes { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: -1; }
-  .shapes span { position: absolute; border-radius: 50%; opacity: 0.13; }
+  footer { margin-top: 3rem; font-size: 0.8rem; opacity: var(--footer-opacity); }
+  .theme-control { display: flex; justify-content: flex-end; align-items: center; gap: .5rem; margin-bottom: 1rem; font-size: .8rem; }
+  .theme-control button { display: grid; place-items: center; width: 42px; height: 42px; color: var(--text); background: transparent; border: 1px solid #886b8b; border-radius: 50%; cursor: pointer; }
+  .theme-control button:hover { background: var(--selected-bg); color: var(--selected-fg); }
+  .theme-control svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .theme-control svg[hidden] { display: none; }
+  .theme-control[hidden] { display: none; }
   @media (prefers-color-scheme: dark) {
-    body { background: #2a152e; color: var(--card); }
-    h1, a { color: var(--paper); }
-    .install { background: #1c0e20; }
-    .shot { border-color: rgba(246, 233, 221, 0.12); box-shadow: 0 20px 55px rgba(0, 0, 0, 0.45); }
-    footer { opacity: 0.5; }
-    .shapes span { opacity: 0.08; }
+    :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #100815; --text: var(--card); --link: var(--paper);
+    --pattern-opacity: .10; --install-bg: #3f234b;
+    --install-shadow: 0 12px 34px rgba(0, 0, 0, .3);
+    --shot-border: rgba(246, 233, 221, .12); --shot-shadow: 0 20px 55px rgba(0, 0, 0, .45);
+    --selected-bg: var(--paper); --selected-fg: var(--ink);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #100815; --text: var(--card); --link: var(--paper);
+    --pattern-opacity: .10; --install-bg: #3f234b;
+    --install-shadow: 0 12px 34px rgba(0, 0, 0, .3);
+    --shot-border: rgba(246, 233, 221, .12); --shot-shadow: 0 20px 55px rgba(0, 0, 0, .45);
+    --selected-bg: var(--paper); --selected-fg: var(--ink);
   }
 </style>
 </head>
 <body>
-  <div class="shapes" aria-hidden="true">
-    <span style="width: 440px; height: 440px; background: var(--red); top: -170px; left: -130px;"></span>
-    <span style="width: 380px; height: 380px; background: var(--orange); bottom: -150px; right: -90px;"></span>
-    <span style="width: 300px; height: 300px; background: var(--sage); bottom: -170px; left: 16%;"></span>
-  </div>
-
+  <div class="geometry" aria-hidden="true"></div>
   <main>
-    <img class="logo" src="figit.svg" alt="figit logo" width="128" height="128">
+    <div class="theme-control" hidden>
+      <button id="theme" type="button" aria-label="Switch to dark theme" title="Switch to dark theme">
+        <svg data-theme-icon="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>
+        <svg data-theme-icon="moon" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M20.8 13.1A9 9 0 0 1 10.9 3.2a9 9 0 1 0 9.9 9.9Z"/></svg>
+      </button>
+    </div>
+    <img class="logo" src="assets/figit.svg" alt="figit logo: a stylized fig on a geometric orange, red, and sage background" width="128" height="128">
     <h1>figit</h1>
     <p class="tagline">A visual Git workspace for your terminal.</p>
     <span class="pill">__FIGIT_VERSION__</span>
@@ -149,21 +211,148 @@
         aria-label="Copy install command">Copy</button>
     </div>
 
-    <nav class="links">
+    <p class="install-note">For macOS and Linux · <a href="https://github.com/agom/figit#install">Installation options</a></p>
+
+    <nav class="links" aria-label="Project">
       <a href="https://github.com/agom/figit">GitHub</a>
       <a href="https://github.com/agom/figit/releases">Releases</a>
       <a href="https://github.com/agom/figit/blob/main/CONTRIBUTING.md">Contributing</a>
     </nav>
 
-    <a class="shot-link" href="screenshot.png" target="_blank" rel="noopener">
-      <img class="shot" src="screenshot.png"
-        alt="figit showing the commit graph, staging area, and syntax-highlighted diff"
-        width="2064" height="1368">
-    </a>
+    <section class="gallery" aria-labelledby="gallery-title">
+      <h2 id="gallery-title">A complete view of your repo.</h2>
+      <div class="gallery-tabs" role="tablist" aria-label="Explore figit" hidden>
+        <button type="button" role="tab" id="tab-graph" aria-controls="panel-graph" aria-selected="true" tabindex="0">Graph &amp; staging</button>
+        <button type="button" role="tab" id="tab-commit" aria-controls="panel-commit" aria-selected="false" tabindex="-1">Commit details</button>
+        <button type="button" role="tab" id="tab-rebase" aria-controls="panel-rebase" aria-selected="false" tabindex="-1">Interactive rebase</button>
+        <button type="button" role="tab" id="tab-conflict" aria-controls="panel-conflict" aria-selected="false" tabindex="-1">Merge conflicts</button>
+        <button type="button" role="tab" id="tab-stash" aria-controls="panel-stash" aria-selected="false" tabindex="-1">Stashes</button>
+      </div>
+      <figure id="panel-graph">
+        <a class="shot-link" href="assets/screenshot.png" target="_blank" rel="noopener" aria-label="Open Graph &amp; staging screenshot at full size (new tab)">
+          <picture>
+            <source data-light-source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
+            <img class="shot" src="assets/screenshot.png" alt="figit workspace with a branching commit graph, staged and unstaged file lists, and a syntax-highlighted code diff" width="2064" height="1368" fetchpriority="high">
+          </picture>
+        </a>
+      </figure>
+      <figure id="panel-commit">
+        <a class="shot-link" href="assets/screenshot-commit.png" target="_blank" rel="noopener" aria-label="Open Commit details screenshot at full size (new tab)">
+          <picture>
+            <source data-light-source media="(prefers-color-scheme: light)" srcset="assets/screenshot-commit-light.png">
+            <img class="shot" src="assets/screenshot-commit.png" alt="Selected commit in figit with its author and message, two changed Rust files, and a diff highlighting added and removed lines" width="2064" height="1368" loading="lazy">
+          </picture>
+        </a>
+      </figure>
+      <figure id="panel-rebase">
+        <a class="shot-link" href="assets/screenshot-rebase.png" target="_blank" rel="noopener" aria-label="Open Interactive rebase screenshot at full size (new tab)">
+          <picture>
+            <source data-light-source media="(prefers-color-scheme: light)" srcset="assets/screenshot-rebase-light.png">
+            <img class="shot" src="assets/screenshot-rebase.png" alt="Interactive rebase dialog listing commits and actions to pick, reword, edit, squash, fix up, or drop them" width="2064" height="1368" loading="lazy">
+          </picture>
+        </a>
+      </figure>
+      <figure id="panel-conflict">
+        <a class="shot-link" href="assets/screenshot-conflict.png" target="_blank" rel="noopener" aria-label="Open Merge conflicts screenshot at full size (new tab)">
+          <picture>
+            <source data-light-source media="(prefers-color-scheme: light)" srcset="assets/screenshot-conflict-light.png">
+            <img class="shot" src="assets/screenshot-conflict.png" alt="Three-way merge in figit with ours and theirs side by side above a result pane containing an unresolved conflict" width="2064" height="1368" loading="lazy">
+          </picture>
+        </a>
+      </figure>
+      <figure id="panel-stash">
+        <a class="shot-link" href="assets/screenshot-stash.png" target="_blank" rel="noopener" aria-label="Open Stashes screenshot at full size (new tab)">
+          <picture>
+            <source data-light-source media="(prefers-color-scheme: light)" srcset="assets/screenshot-stash-light.png">
+            <img class="shot" src="assets/screenshot-stash.png" alt="Stash manager listing saved work with shortcuts to save, apply, pop, or drop a stash and include untracked files" width="2064" height="1368" loading="lazy">
+          </picture>
+        </a>
+      </figure>
+    </section>
+
+    <section class="contact" aria-labelledby="contact-title">
+      <h2 id="contact-title">Made for your everyday Git.</h2>
+      <p>Get in touch: <a href="mailto:hello@figit.dev">hello@figit.dev</a></p>
+      <nav class="links" aria-label="Feedback and downloads">
+        <a href="https://github.com/agom/figit/issues">Report a bug</a>
+        <a href="https://github.com/agom/figit/releases/latest">Download the latest release</a>
+      </nav>
+    </section>
 
     <footer>MIT licensed · built with Rust, ratatui &amp; gix</footer>
   </main>
   <script>
+    (() => {
+      const button = document.querySelector('#theme');
+      const system = matchMedia('(prefers-color-scheme: dark)');
+      let preference = document.documentElement.dataset.theme || 'system';
+      const isLight = () => preference === 'light' || (preference === 'system' && !system.matches);
+      function applyTheme() {
+        if (preference === 'system') delete document.documentElement.dataset.theme;
+        else document.documentElement.dataset.theme = preference;
+        const light = isLight();
+        const label = light ? 'Switch to dark theme' : 'Switch to light theme';
+        button.setAttribute('aria-label', label);
+        button.title = label;
+        button.querySelector('[data-theme-icon="sun"]').toggleAttribute('hidden', !light);
+        button.querySelector('[data-theme-icon="moon"]').toggleAttribute('hidden', light);
+        document.querySelectorAll('[data-light-source]').forEach(source => {
+          source.media = light ? 'all' : 'not all';
+          const link = source.closest('a');
+          link.href = light ? source.srcset : link.querySelector('img').getAttribute('src');
+        });
+      }
+      button.addEventListener('click', () => {
+        preference = isLight() ? 'dark' : 'light';
+        try { localStorage.setItem('figit-theme', preference); } catch {}
+        applyTheme();
+      });
+      system.addEventListener('change', applyTheme);
+      applyTheme();
+      document.querySelector('.theme-control').hidden = false;
+    })();
+    (() => {
+      const gallery = document.querySelector('.gallery');
+      const tabs = [...gallery.querySelectorAll('[role="tab"]')];
+      const panels = [...gallery.querySelectorAll('figure')];
+      const tablist = gallery.querySelector('[role="tablist"]');
+      let current = 0;
+      function select(index, focus = false) {
+        current = (index + tabs.length) % tabs.length;
+        tabs.forEach((tab, i) => {
+          tab.setAttribute('aria-selected', String(i === current));
+          tab.tabIndex = i === current ? 0 : -1;
+          panels[i].hidden = i !== current;
+        });
+        if (focus) tabs[current].focus();
+      }
+      panels.forEach((panel, i) => {
+        panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute('aria-labelledby', tabs[i].id);
+        panel.tabIndex = 0;
+      });
+      tabs.forEach((tab, i) => tab.addEventListener('click', () => select(i)));
+      tablist.addEventListener('keydown', event => {
+        const next = { ArrowRight: current + 1, ArrowLeft: current - 1, Home: 0, End: tabs.length - 1 }[event.key];
+        if (next !== undefined) { event.preventDefault(); select(next, true); }
+      });
+      let touchStart = null;
+      gallery.addEventListener('touchstart', event => {
+        touchStart = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
+      }, { passive: true });
+      gallery.addEventListener('touchend', event => {
+        if (!touchStart) return;
+        const dx = event.changedTouches[0].clientX - touchStart.x;
+        const dy = event.changedTouches[0].clientY - touchStart.y;
+        if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) select(current + (dx < 0 ? 1 : -1));
+        touchStart = null;
+      }, { passive: true });
+      gallery.addEventListener('touchcancel', () => { touchStart = null; });
+      gallery.classList.add('enhanced');
+      select(0);
+      tablist.hidden = false;
+    })();
+
     (() => {
       const button = document.querySelector('.copy');
       if (!button) return;

@@ -15,7 +15,11 @@ impl App {
     }
 
     pub(super) fn button_style(&self, selected: bool) -> Style {
-        if selected {
+        if selected && self.light_theme() {
+            self.selection_style(true)
+                .fg(Color::Rgb(57, 43, 48))
+                .add_modifier(Modifier::BOLD)
+        } else if selected {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightCyan)
@@ -28,9 +32,9 @@ impl App {
     pub(super) fn selection_style(&self, active: bool) -> Style {
         let background = match (self.light_theme(), active) {
             (false, true) => Color::Rgb(48, 54, 68),
-            (true, true) => Color::Rgb(228, 232, 237),
+            (true, true) => Color::Rgb(225, 207, 181),
             (false, false) => Color::Rgb(30, 34, 44),
-            (true, false) => Color::Rgb(235, 238, 241),
+            (true, false) => Color::Rgb(225, 207, 181),
         };
         Style::default().bg(background)
     }
@@ -382,14 +386,14 @@ impl App {
                     continue;
                 }
                 cell.fg = match cell.fg {
-                    Color::White | Color::Gray => Color::Rgb(35, 42, 52),
-                    Color::DarkGray => Color::Rgb(93, 104, 118),
-                    Color::LightCyan => Color::Rgb(0, 99, 125),
-                    Color::LightBlue => Color::Rgb(40, 79, 158),
-                    Color::LightGreen | Color::Green => Color::Rgb(28, 110, 52),
-                    Color::LightRed | Color::Red => Color::Rgb(170, 43, 55),
+                    Color::White | Color::Gray => Color::Rgb(57, 43, 48),
+                    Color::DarkGray => Color::Rgb(110, 94, 88),
+                    Color::LightCyan => Color::Rgb(41, 96, 76),
+                    Color::LightBlue => Color::Rgb(95, 64, 110),
+                    Color::LightGreen | Color::Green => Color::Rgb(53, 81, 30),
+                    Color::LightRed | Color::Red => Color::Rgb(132, 26, 39),
                     Color::LightYellow | Color::Yellow => Color::Rgb(131, 89, 0),
-                    Color::LightMagenta | Color::Magenta => Color::Rgb(137, 55, 142),
+                    Color::LightMagenta | Color::Magenta => Color::Rgb(125, 52, 87),
                     other => other,
                 };
                 if let Color::Rgb(r, g, b) = cell.fg {
@@ -439,15 +443,23 @@ pub(super) fn devicon_color(hex: &str) -> Color {
     Color::Gray
 }
 
+// Warm earth tones separate surfaces from a cream terminal background.
 fn light_surface(color: Color) -> Color {
     match color {
-        Color::LightBlue | Color::Blue => Color::Rgb(197, 216, 241),
-        Color::LightGreen | Color::Green => Color::Rgb(206, 230, 210),
-        Color::LightYellow | Color::Yellow => Color::Rgb(241, 226, 183),
-        Color::LightRed | Color::Red => Color::Rgb(241, 206, 207),
-        Color::LightMagenta | Color::Magenta => Color::Rgb(232, 207, 233),
-        Color::LightCyan | Color::Cyan => Color::Rgb(195, 226, 233),
-        Color::Rgb(45, 50, 65) => Color::Rgb(210, 226, 235),
+        Color::LightBlue | Color::Blue => Color::Rgb(193, 168, 187),
+        Color::LightGreen | Color::Green => Color::Rgb(189, 202, 148),
+        Color::LightYellow | Color::Yellow => Color::Rgb(230, 198, 130),
+        Color::LightRed | Color::Red => Color::Rgb(226, 170, 145),
+        Color::LightMagenta | Color::Magenta => Color::Rgb(216, 169, 181),
+        Color::LightCyan | Color::Cyan => Color::Rgb(165, 193, 175),
+        // Diff bands need more separation from a light terminal than the
+        // generic dark-to-light surface conversion provides. Keep selected
+        // hunks and word changes stronger than their surrounding diff lines.
+        Color::Rgb(38, 56, 43) => Color::Rgb(218, 229, 199),
+        Color::Rgb(70, 44, 49) => Color::Rgb(242, 211, 196),
+        Color::Rgb(54, 91, 60) => Color::Rgb(190, 208, 159),
+        Color::Rgb(107, 60, 66) => Color::Rgb(225, 171, 153),
+        Color::Rgb(45, 50, 65) => Color::Rgb(225, 207, 181),
         Color::Rgb(r, g, b) if r.max(g).max(b) < 180 => {
             let max = r.max(g).max(b);
             let base = if max >= 75 { 224 } else { 247 };
@@ -704,6 +716,18 @@ pub(super) fn dim_graph_line(
     terminal_bg: Option<Color>,
     terminal_palette: &TerminalAnsiPalette,
 ) {
+    // On a light background, halving a pill color before converting its
+    // surface washes it back into the paper. Keep the semantic fill; the
+    // surrounding text and graph lanes still distinguish inactive history.
+    let light = matches!(terminal_bg, Some(Color::Rgb(r, g, b)) if
+        u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 > 150_000);
+    let dim_pill = |color| {
+        if light {
+            color
+        } else {
+            darker_color(color, terminal_palette)
+        }
+    };
     for (index, span) in line.spans.iter_mut().enumerate() {
         if (lane_start..lane_start + lane_columns).contains(&index) {
             if let Some(foreground) = span.style.fg {
@@ -711,10 +735,7 @@ pub(super) fn dim_graph_line(
             }
         } else if span.style.add_modifier.contains(Modifier::REVERSED) {
             if let Some(fill) = span.style.fg {
-                let fill = presentation::pill_fill_color(
-                    darker_color(fill, terminal_palette),
-                    terminal_palette,
-                );
+                let fill = presentation::pill_fill_color(dim_pill(fill), terminal_palette);
                 span.style = span.style.fg(fill).bg(presentation::pill_text_color(
                     fill,
                     terminal_bg,
@@ -725,15 +746,12 @@ pub(super) fn dim_graph_line(
             if terminal_bg == Some(background) {
                 if let Some(foreground) = span.style.fg {
                     span.style = span.style.fg(presentation::pill_fill_color(
-                        darker_color(foreground, terminal_palette),
+                        dim_pill(foreground),
                         terminal_palette,
                     ));
                 }
             } else {
-                let fill = presentation::pill_fill_color(
-                    darker_color(background, terminal_palette),
-                    terminal_palette,
-                );
+                let fill = presentation::pill_fill_color(dim_pill(background), terminal_palette);
                 span.style = span.style.bg(fill).fg(presentation::pill_text_color(
                     fill,
                     terminal_bg,

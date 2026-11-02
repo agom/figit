@@ -244,7 +244,7 @@ impl Tui {
                         && cell.bold()
                         && (matches!(
                             cell.bgcolor(),
-                            vt100::Color::Rgb(48, 54, 68) | vt100::Color::Rgb(228, 232, 237)
+                            vt100::Color::Rgb(48, 54, 68) | vt100::Color::Rgb(225, 207, 181)
                         ) || cell.underline()))
                     .then_some(())
                 })
@@ -3058,10 +3058,10 @@ fn osc11_background_reply(hex: &str) -> Vec<u8> {
 const TERM_BG: &str = "#1e1e2e";
 const TERM_FG: &str = "#cdd6f4";
 
-fn svg_color(color: vt100::Color, default: &str) -> String {
+fn svg_color(color: vt100::Color, default: &str, palette: &[&str; 16]) -> String {
     match color {
         vt100::Color::Default => default.to_string(),
-        vt100::Color::Idx(index) => TERM_PALETTE
+        vt100::Color::Idx(index) => palette
             .get(index as usize)
             .copied()
             .unwrap_or(default)
@@ -3076,11 +3076,17 @@ fn escape_svg(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn svg_cell_color(cell: &vt100::Cell, foreground: &str, background: &str, text: bool) -> String {
+fn svg_cell_color(
+    cell: &vt100::Cell,
+    foreground: &str,
+    background: &str,
+    text: bool,
+    palette: &[&str; 16],
+) -> String {
     if text != cell.inverse() {
-        svg_color(cell.fgcolor(), foreground)
+        svg_color(cell.fgcolor(), foreground, palette)
     } else {
-        svg_color(cell.bgcolor(), background)
+        svg_color(cell.bgcolor(), background, palette)
     }
 }
 
@@ -3095,6 +3101,17 @@ fn terminal_svg_with_defaults(
     background: &str,
     foreground: &str,
 ) -> String {
+    terminal_svg_with_theme(parser, cols, rows, background, foreground, &TERM_PALETTE)
+}
+
+fn terminal_svg_with_theme(
+    parser: &vt100::Parser,
+    cols: u16,
+    rows: u16,
+    background: &str,
+    foreground: &str,
+    palette: &[&str; 16],
+) -> String {
     let screen = parser.screen();
     let (cell_w, cell_h) = (8.4_f32, 18.0_f32);
     let (pad, bar) = (12.0_f32, 30.0_f32);
@@ -3108,11 +3125,11 @@ fn terminal_svg_with_defaults(
     out.push_str(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{total_w:.0}\" height=\"{total_h:.0}\" \
          viewBox=\"0 0 {total_w:.0} {total_h:.0}\" xml:space=\"preserve\" \
-         font-family=\"'MesloLGS Nerd Font Mono', 'MesloLGM Nerd Font Mono', 'JetBrainsMono Nerd Font Mono', monospace\" \
+         font-family=\"'MesloLGS NF', 'JetBrainsMono NF', 'JetBrainsMonoNL NF', monospace\" \
          font-size=\"14\">"
     ));
     out.push_str(&format!(
-        "<rect width=\"{total_w:.0}\" height=\"{total_h:.0}\" rx=\"10\" fill=\"#11111b\"/>"
+        "<rect width=\"{total_w:.0}\" height=\"{total_h:.0}\" rx=\"10\" fill=\"{background}\"/>"
     ));
     for (index, color) in ["#ff5f56", "#ffbd2e", "#27c93f"].iter().enumerate() {
         out.push_str(&format!(
@@ -3130,13 +3147,13 @@ fn terminal_svg_with_defaults(
         while col < cols {
             let bg = screen.cell(row, col).map_or_else(
                 || background.to_string(),
-                |cell| svg_cell_color(cell, foreground, background, false),
+                |cell| svg_cell_color(cell, foreground, background, false, palette),
             );
             let mut end = col + 1;
             while end < cols {
                 let next = screen.cell(row, end).map_or_else(
                     || background.to_string(),
-                    |cell| svg_cell_color(cell, foreground, background, false),
+                    |cell| svg_cell_color(cell, foreground, background, false, palette),
                 );
                 if next != bg {
                     break;
@@ -3155,6 +3172,46 @@ fn terminal_svg_with_defaults(
         }
     }
 
+    // A terminal fits Powerline separators to its cell grid. SVG font metrics
+    // do not guarantee that fit. Join matching caps and their cell backgrounds
+    // into one shape so antialiasing cannot leave seams between the pieces.
+    let mut pill_caps = std::collections::HashSet::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            let Some(left) = screen.cell(row, col) else {
+                continue;
+            };
+            if left.contents() != "\u{e0b6}" {
+                continue;
+            }
+            let fill = svg_cell_color(left, foreground, background, true, palette);
+            for end in col + 1..cols {
+                let Some(cell) = screen.cell(row, end) else {
+                    break;
+                };
+                if cell.contents() == "\u{e0b4}"
+                    && svg_cell_color(cell, foreground, background, true, palette) == fill
+                {
+                    if end > col + 1 {
+                        out.push_str(&format!(
+                            "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{cell_h:.1}\" rx=\"{cell_w:.1}\" ry=\"{:.1}\" fill=\"{fill}\"/>",
+                            ox + f32::from(col) * cell_w,
+                            oy + f32::from(row) * cell_h,
+                            f32::from(end - col + 1) * cell_w,
+                            cell_h / 2.0,
+                        ));
+                        pill_caps.insert((row, col));
+                        pill_caps.insert((row, end));
+                    }
+                    break;
+                }
+                if svg_cell_color(cell, foreground, background, false, palette) != fill {
+                    break;
+                }
+            }
+        }
+    }
+
     for row in 0..rows {
         let baseline = oy + f32::from(row) * cell_h + cell_h * 0.76;
         for col in 0..cols {
@@ -3165,10 +3222,13 @@ fn terminal_svg_with_defaults(
             if glyph.is_empty() || glyph == " " {
                 continue;
             }
+            if pill_caps.contains(&(row, col)) {
+                continue;
+            }
             out.push_str(&format!(
                 "<text x=\"{:.1}\" y=\"{baseline:.1}\" fill=\"{}\" textLength=\"{cell_w:.1}\" lengthAdjust=\"spacingAndGlyphs\"",
                 ox + f32::from(col) * cell_w,
-                svg_cell_color(cell, foreground, background, true),
+                svg_cell_color(cell, foreground, background, true, palette),
             ));
             if cell.bold() {
                 out.push_str(" font-weight=\"bold\"");
@@ -3182,6 +3242,19 @@ fn terminal_svg_with_defaults(
 
     out.push_str("</svg>\n");
     out
+}
+
+#[test]
+fn screenshot_pills_join_caps_to_the_cell_fill() {
+    let mut parser = vt100::Parser::new(1, 12, 0);
+    parser.process(b"\x1b[2;31m\xee\x82\xb6\x1b[0;30;41m main \x1b[0;2;31m\xee\x82\xb4\x1b[0m");
+    let svg = terminal_svg(&parser, 12, 1);
+    assert!(svg.contains("width=\"67.2\" height=\"18.0\" rx=\"8.4\" ry=\"9.0\" fill=\"#f38ba8\""));
+    assert!(!svg.contains('\u{e0b6}'));
+    assert!(!svg.contains('\u{e0b4}'));
+    // An isolated separator is still rendered as a glyph.
+    parser.process(b"\r\x1b[2K\xee\x82\xb6");
+    assert!(terminal_svg(&parser, 12, 1).contains('\u{e0b6}'));
 }
 
 /// Rasterize the terminal SVG to a 2x PNG at `path` with `rsvg-convert`. The
@@ -3201,22 +3274,47 @@ fn write_screenshot_png(svg: &str, path: &str) {
     let _ = std::fs::remove_file(&temp);
 }
 
-/// Launch figit in a PTY with the README's Catppuccin theme.
-fn launch_themed(repository: &Path) -> Tui {
-    let background = osc11_background_reply(TERM_BG);
-    let palette = osc4_palette_reply(&TERM_PALETTE);
-    Tui::launch_with_theme(repository, None, &[], 120, 35, &background, &palette)
-}
-
-/// Rasterize the current screen to `path`.
-fn capture_render(tui: &Tui, path: &str) {
-    let screen = tui.screen.lock().expect("screen lock");
-    write_screenshot_png(&terminal_svg(&screen, 120, 35), path);
-}
-
 #[test]
 #[ignore = "regenerates the README screenshots; run with --ignored --nocapture"]
 fn generate_readme_screenshots() {
+    generate_screenshot_set(false);
+    generate_screenshot_set(true);
+}
+
+fn generate_screenshot_set(light: bool) {
+    // Use the same fixture scenes, with terminal theme replies driving the app.
+    let light_palette = [
+        "#665448", "#a83f2e", "#4d632b", "#946015", "#79563f", "#78415f", "#346653", "#4c324f",
+        "#897568", "#a83f2e", "#4d632b", "#946015", "#79563f", "#78415f", "#346653", "#665448",
+    ];
+    let (background, foreground, palette) = if light {
+        ("#f6e9dd", "#4c324f", &light_palette)
+    } else {
+        (TERM_BG, TERM_FG, &TERM_PALETTE)
+    };
+    let launch = |repository: &Path| {
+        Tui::launch_with_theme(
+            repository,
+            None,
+            &[],
+            120,
+            35,
+            &osc11_background_reply(background),
+            &osc4_palette_reply(palette),
+        )
+    };
+    let capture = |tui: &Tui, path: &str| {
+        let screen = tui.screen.lock().expect("screen lock");
+        let path = if light {
+            path.replace(".png", "-light.png")
+        } else {
+            path.to_string()
+        };
+        write_screenshot_png(
+            &terminal_svg_with_theme(&screen, 120, 35, background, foreground, palette),
+            &path,
+        );
+    };
     // Staging + diff, then a commit's details and syntax-highlighted diff.
     let dir = TempDir::new().expect("temp dir");
     let dest = dir.path().join("repo");
@@ -3225,18 +3323,18 @@ fn generate_readme_screenshots() {
         .status()
         .unwrap()
         .success());
-    let mut tui = launch_themed(&dest);
-    capture_render(&tui, "assets/screenshot.png");
+    let mut tui = launch(&dest);
+    capture(&tui, "assets/screenshot.png");
     tui.send(b"\t");
     tui.send(b"\x1b[B\x1b[B\x1b[B\x1b[B");
     tui.wait_for("Commit Details");
     thread::sleep(Duration::from_millis(600));
-    capture_render(&tui, "assets/screenshot-commit.png");
+    capture(&tui, "assets/screenshot-commit.png");
     drop(tui);
 
     // Interactive rebase plan.
     let repository = init_linear_repository();
-    let mut tui = launch_themed(repository.path());
+    let mut tui = launch(repository.path());
     tui.wait_for("tip commit");
     // Let the selected commit's details finish loading before opening the
     // overlay: once it is open the placeholder never clears.
@@ -3247,15 +3345,15 @@ fn generate_readme_screenshots() {
     tui.wait_for("Interactive rebase");
     tui.wait_for("target commit");
     thread::sleep(Duration::from_millis(300));
-    capture_render(&tui, "assets/screenshot-rebase.png");
+    capture(&tui, "assets/screenshot-rebase.png");
     drop(tui);
 
     // Three-way merge conflict resolver.
     let repository = init_conflict_repository();
-    let tui = launch_themed(repository.path());
+    let tui = launch(repository.path());
     tui.wait_for("Three-way merge — file.txt");
     tui.wait_for("Ours");
-    capture_render(&tui, "assets/screenshot-conflict.png");
+    capture(&tui, "assets/screenshot-conflict.png");
     drop(tui);
 
     // Stash manager with one saved stash.
@@ -3264,10 +3362,10 @@ fn generate_readme_screenshots() {
         repository.path(),
         &["stash", "push", "-u", "-m", "wip before experiment"],
     );
-    let mut tui = launch_themed(repository.path());
+    let mut tui = launch(repository.path());
     tui.send(b"s");
     tui.wait_for("Stashes (1)");
-    capture_render(&tui, "assets/screenshot-stash.png");
+    capture(&tui, "assets/screenshot-stash.png");
     drop(tui);
 }
 
@@ -3416,7 +3514,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                 let col = |text: &str| terminal_columns(&line[..line.find(text).unwrap()]) as u16;
                 let cell = |column| screen.cell(row as u16, column).unwrap();
                 let expected_bg = match theme {
-                    "light" => vt100::Color::Rgb(228, 232, 237),
+                    "light" => vt100::Color::Rgb(225, 207, 181),
                     "mono" => vt100::Color::Default,
                     _ => vt100::Color::Rgb(48, 54, 68),
                 };
@@ -3432,7 +3530,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                     assert_eq!(
                         cell(col("+1")).fgcolor(),
                         if theme == "light" {
-                            vt100::Color::Rgb(28, 110, 52)
+                            vt100::Color::Rgb(53, 81, 30)
                         } else {
                             vt100::Color::Idx(2)
                         }
@@ -3440,7 +3538,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                     assert_eq!(
                         cell(col("-1")).fgcolor(),
                         if theme == "light" {
-                            vt100::Color::Rgb(170, 43, 55)
+                            vt100::Color::Rgb(132, 26, 39)
                         } else {
                             vt100::Color::Idx(1)
                         }
@@ -3495,7 +3593,7 @@ fn visual_layouts_and_commit_errors_work_across_terminal_themes() {
                 let cap = screen.cell(row as u16, cap_column as u16).unwrap();
                 let label = screen.cell(row as u16, cap_column as u16 + 2).unwrap();
                 let expected_bg = match theme {
-                    "light" => vt100::Color::Rgb(228, 232, 237),
+                    "light" => vt100::Color::Rgb(225, 207, 181),
                     "mono" => vt100::Color::Default,
                     _ => vt100::Color::Rgb(48, 54, 68),
                 };

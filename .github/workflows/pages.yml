@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "assets/**"
       - ".github/workflows/pages.yml"
   # `release: published` does not fire for releases created with GITHUB_TOKEN,
   # which is how the cargo-dist Release workflow publishes. Run after it instead.
@@ -42,9 +43,12 @@ jobs:
           fi
           sed -i "s|__FIGIT_VERSION__|${version}|g" site/index.html
 
+      - name: Assemble website with shared assets
+        run: cp -RL site "$RUNNER_TEMP/figit-site"
+
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: site
+          path: ${{ runner.temp }}/figit-site
       - id: deployment
         uses: actions/deploy-pages@v5
