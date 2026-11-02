@@ -1593,6 +1593,77 @@ fn rendered_pills_keep_contrast_in_light_dark_and_dimmed_rows() {
 }
 
 #[test]
+fn light_selection_surfaces_share_one_background() {
+    let mut app = App::new(synthetic_graph(), vec![], None);
+    app.bg = Some(Color::Rgb(246, 233, 221));
+    let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 4, 1));
+    for (index, style) in [
+        app.selection_style(true),
+        app.selection_style(false),
+        app.button_style(true),
+        Style::default().bg(Color::Rgb(45, 50, 65)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        buffer.cell_mut((index as u16, 0)).unwrap().set_style(style);
+    }
+    app.apply_terminal_theme(&mut buffer);
+    let expected = buffer.content[0].bg;
+    assert!(buffer.content.iter().all(|cell| cell.bg == expected));
+}
+
+#[test]
+fn light_diff_semantic_text_is_readable_on_normal_and_emphasized_bands() {
+    let mut app = App::new(synthetic_graph(), vec![], None);
+    app.bg = Some(Color::Rgb(246, 233, 221));
+    let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 4, 1));
+    for (index, kind) in [DiffKind::Added, DiffKind::Removed].into_iter().enumerate() {
+        for (emphasized, background) in [
+            diff_background(kind),
+            Some(if kind == DiffKind::Added {
+                Color::Rgb(54, 91, 60)
+            } else {
+                Color::Rgb(107, 60, 66)
+            }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            buffer
+                .cell_mut((index as u16 * 2 + emphasized as u16, 0))
+                .unwrap()
+                .set_symbol("+")
+                .set_fg(diff_color(kind))
+                .set_bg(background.unwrap());
+        }
+    }
+    app.apply_terminal_theme(&mut buffer);
+    let luminance = |color: Color| {
+        let Color::Rgb(r, g, b) = color else {
+            panic!("expected RGB")
+        };
+        let linear = |value: u8| {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    for cell in &buffer.content {
+        let foreground = luminance(cell.fg);
+        let background = luminance(cell.bg);
+        let contrast = (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+        assert!(contrast >= 4.5, "diff contrast {contrast}: {cell:?}");
+    }
+    assert_ne!(buffer.content[0].bg, buffer.content[1].bg);
+    assert_ne!(buffer.content[2].bg, buffer.content[3].bg);
+}
+
+#[test]
 fn local_branch_with_a_gone_upstream_is_marked() {
     let mut app = App::new(synthetic_graph(), vec![], None);
     app.bg = Some(Color::Rgb(0, 0, 0));
