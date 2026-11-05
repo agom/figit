@@ -44,8 +44,10 @@ impl App {
             if self.loading {
                 self.refresh.deadline = Some(Instant::now());
             }
+            self.auto_fetch.deadline = Some(Instant::now() + Duration::from_secs(3));
             self.event_loop(&mut terminal)
         })();
+        self.stop_auto_fetch();
         self.watch_setup = None;
         self.repository_watcher = None;
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
@@ -70,6 +72,7 @@ impl App {
             self.poll_repository_watcher();
             self.poll_visible_file_metadata();
             self.poll_remote_operation();
+            self.poll_auto_fetch();
             self.poll_local_job();
             if self
                 .update_check_deadline

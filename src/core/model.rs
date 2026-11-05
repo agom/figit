@@ -208,6 +208,9 @@ pub struct Commit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusEntry {
     pub path: GitPath,
+    /// Source name for a rename or copy; `path` is always the destination.
+    #[serde(default)]
+    pub original_path: Option<GitPath>,
     /// Index status (`' '` when unchanged in the index).
     pub index: char,
     /// Worktree status (`' '` when unchanged in the worktree).

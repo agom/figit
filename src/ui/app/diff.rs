@@ -49,6 +49,21 @@ pub(super) fn parse_diff(diff: &str) -> Vec<DiffLine> {
         {
             continue;
         }
+        if raw.starts_with("rename from ")
+            || raw.starts_with("rename to ")
+            || raw.starts_with("copy from ")
+            || raw.starts_with("copy to ")
+            || raw.starts_with("similarity index ")
+            || raw.starts_with("dissimilarity index ")
+        {
+            lines.push(DiffLine {
+                old_no: None,
+                new_no: None,
+                text: raw.to_string(),
+                kind: DiffKind::Meta,
+            });
+            continue;
+        }
         if raw.starts_with('\\') {
             // `\` marks out-of-band notes (e.g. "No newline at end of file", or
             // our own "file too large" notice). Render them as metadata so they

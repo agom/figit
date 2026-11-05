@@ -68,7 +68,12 @@ impl App {
         }
         self.action_error = None;
         self.redraw = true;
+        self.auto_fetch
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let gate = self.git_gate.clone();
         thread::spawn(move || {
+            let _guard = gate.lock().unwrap_or_else(|e| e.into_inner());
             let result = crate::backend::open(&path)
                 .and_then(|backend| job(backend.as_ref()))
                 .map_err(|error| format!("{error:#}"));

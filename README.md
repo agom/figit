@@ -55,8 +55,9 @@ Inspecting a commit shows its details and syntax-highlighted diff:
 
 Resolve merge conflicts with an aligned Ours / Theirs / Result view. The active
 conflict is highlighted; `[`/`]` jumps between conflicts. With the resolver
-focused, `o`/`t` previews that conflict’s Ours/Theirs version, `Enter` confirms, and `Esc` cancels the preview.
-`b` explicitly previews restoring the **entire file** from Base. Use `e` for an
+focused, `1`/`2` previews that conflict’s Ours/Theirs version and `3`/`4` combines
+both versions in either order. `Enter` confirms and `Esc` cancels the preview.
+`b` toggles a read-only Base view; `B` previews restoring the **entire file** from Base. Use `e` for an
 external editor or `:` for resolver commands. Arrow keys, mouse scrolling, and
 Page Up/Down keep all three panes synchronized; `z` maximizes the resolver.
 
@@ -94,6 +95,33 @@ figit [PATH]        # open PATH (defaults to the current directory)
 figit --help
 figit --version
 ```
+
+### Background fetching
+
+After the first screen is displayed, figit fetches configured remotes in the
+background and repeats every two minutes. It prunes deleted remote branches,
+respects `remote.<name>.skipFetchAll`, and preserves panel focus and graph scroll.
+Background fetch never prompts for credentials; failures appear in the footer,
+with details in `: Background fetch status`. Manual Fetch remains available.
+
+```sh
+git config figit.fetchInterval 300  # seconds; minimum 10, 0 disables
+git config figit.autoFetch false    # disable background fetching
+```
+
+Settings take effect on the next scheduled check, or on restart if fetching was
+disabled. `FIGIT_AUTO_FETCH=0 figit` disables it for one session. Foreground Git
+operations cancel a running background fetch before taking over. Force-with-lease
+pushes use the remote commit recorded when the push dialog opened.
+
+### Commands without shortcuts
+
+From the graph, `:` also offers **Fixup and autosquash staged changes…** and
+**Autosquash existing fixup commits…**. Select a target on the current branch;
+confirmation shows the target, affected commit count, staged file count, and
+whether the history is published. Autosquash preserves merges and stops in the
+normal conflict workflow if necessary. Resolve and continue, or abort; a newly
+created fixup commit is retained when the rebase is aborted.
 
 ## Key map
 
@@ -194,8 +222,11 @@ the selected commit and `Esc` cancels back to staging.
 
 | Key | Action |
 | --- | --- |
-| `o` / `t` | Preview Ours / Theirs for the selected hunk (or whole file when no text hunk exists) |
-| `b` | Preview restoring the entire file from Base |
+| `1` / `2` | Preview Ours / Theirs for the selected conflict (or whole file when no text conflict exists) |
+| `3` / `4` | Preview Ours + Theirs / Theirs + Ours for the selected text conflict |
+| `b` | Toggle a read-only Base view |
+| `B` | Preview restoring the entire file from Base |
+| `u` | Undo the last applied resolution, including a staged resolution |
 | `e` | Open the file in `$VISUAL` / `$EDITOR` |
 | `Enter` | Confirm the previewed result (including deletion when the chosen side has no file) |
 | `Esc` | Cancel the preview without changing the file |

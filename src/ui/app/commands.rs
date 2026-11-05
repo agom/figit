@@ -14,6 +14,11 @@ pub(super) enum CommandId {
     Amend,
     Fixup,
     ConfirmFixup,
+    FixupAutosquash,
+    Autosquash,
+    AutoFetchStatus,
+    ToggleConflictBase,
+    UndoConflict,
     Stash,
     ApplySelection,
     ApplyFile,
@@ -92,6 +97,25 @@ impl App {
             .diff_lines
             .iter()
             .any(|line| matches!(line.kind, DiffKind::Added | DiffKind::Removed));
+        if !busy
+            && matches!(self.focus, Focus::Status | Focus::Diff)
+            && !self.conflict_undo.is_empty()
+        {
+            add(
+                UndoConflict,
+                "Undo last conflict resolution",
+                "u",
+                "restore conflict|undo merge",
+            );
+        }
+        if !busy && self.focus != Focus::Graph && self.auto_fetch.last_error.is_some() {
+            add(
+                AutoFetchStatus,
+                "Background fetch status",
+                "",
+                "auto fetch|remote|error|details",
+            );
+        }
         match self.focus {
             Focus::Graph if !busy => {
                 if self.pending_fixup {
@@ -100,6 +124,36 @@ impl App {
                     }
                 } else {
                     add(Fetch, "Fetch", "F", "download|remote");
+                    add(
+                        AutoFetchStatus,
+                        "Background fetch status",
+                        "",
+                        "auto fetch|remote|error|details",
+                    );
+                    if self
+                        .selected_rebase_commit()
+                        .is_some_and(|commit| !commit.is_merge())
+                        && !self.rebase_active
+                    {
+                        add(
+                            Autosquash,
+                            "Autosquash existing fixup commits…",
+                            "",
+                            "squash|rebase|history",
+                        );
+                        if self
+                            .local_status
+                            .iter()
+                            .any(|e| e.index != ' ' && e.index != '?' && !e.is_conflict())
+                        {
+                            add(
+                                FixupAutosquash,
+                                "Fixup and autosquash staged changes…",
+                                "",
+                                "fixup and autosquash|squash|rebase",
+                            );
+                        }
+                    }
                     if self.selected_current_branch() {
                         add(Graph(GraphAction::Pull), "Pull", "p", "update branch");
                     }
@@ -206,7 +260,7 @@ impl App {
                         } else {
                             "Preview ours (whole file)"
                         },
-                        "o",
+                        "1",
                         "resolve conflict",
                     );
                     add(
@@ -220,13 +274,37 @@ impl App {
                         } else {
                             "Preview theirs (whole file)"
                         },
-                        "t",
+                        "2",
                         "resolve conflict",
                     );
                     add(
+                        ToggleConflictBase,
+                        "Toggle read-only base view",
+                        "b",
+                        "ancestor|compare",
+                    );
+                    if self
+                        .three_way_view
+                        .as_ref()
+                        .is_some_and(|view| view.resolves_hunks)
+                    {
+                        add(
+                            Conflict(ConflictSide::OursThenTheirs),
+                            "Preview ours then theirs",
+                            "3",
+                            "both|combine|resolve",
+                        );
+                        add(
+                            Conflict(ConflictSide::TheirsThenOurs),
+                            "Preview theirs then ours",
+                            "4",
+                            "both|combine|resolve",
+                        );
+                    }
+                    add(
                         Conflict(ConflictSide::Base),
                         "Restore entire file from Base",
-                        "b",
+                        "B",
                         "restore base",
                     );
                     add(
@@ -461,6 +539,19 @@ impl App {
             Graph(GraphAction::Delete) => self.open_delete_action(),
             Graph(action) => self.open_graph_action(action),
             Fetch => self.open_remote_action(false),
+            FixupAutosquash => self.open_autosquash(true),
+            Autosquash => self.open_autosquash(false),
+            AutoFetchStatus => {
+                self.show_git_error(self.auto_fetch.status_detail());
+                self.error_title = "Background fetch".into();
+            }
+            ToggleConflictBase => {
+                if let Some(view) = self.three_way_view.as_mut() {
+                    view.show_base = !view.show_base;
+                    view.line_cache.borrow_mut().clear();
+                }
+            }
+            UndoConflict => self.undo_conflict_resolution(),
             Push => self.open_remote_action(true),
             Search => self.open_search_popup(),
             Undo => self.open_undo_popup(),

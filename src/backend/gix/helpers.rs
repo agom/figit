@@ -735,14 +735,20 @@ pub(super) fn parse_status(bytes: &[u8]) -> Result<Vec<StatusEntry>> {
         }
         let index = field[0] as char;
         let worktree = field[1] as char;
-        let mut path = GitPath::from_bytes(field[3..].to_vec());
+        let path = GitPath::from_bytes(field[3..].to_vec());
+        let mut original_path = None;
         // Porcelain v1 uses a second NUL field for the original path on renames.
-        if (index == 'R' || worktree == 'R') && i + 1 < fields.len() {
-            path = GitPath::from_bytes(fields[i + 1].to_vec());
+        if matches!(index, 'R' | 'C') || matches!(worktree, 'R' | 'C') {
+            anyhow::ensure!(
+                i + 1 < fields.len(),
+                "rename status is missing the source path"
+            );
+            original_path = Some(GitPath::from_bytes(fields[i + 1].to_vec()));
             i += 1;
         }
         entries.push(StatusEntry {
             path,
+            original_path,
             index,
             worktree,
         });
@@ -763,4 +769,94 @@ pub(super) fn short_ref_name(full: &gix::bstr::BStr) -> String {
         .or_else(|| s.strip_prefix("refs/tags/"))
         .unwrap_or(&s)
         .to_string()
+}
+
+/// With -z, renamed numstat records are counts + an empty path, then old and new paths.
+pub(super) fn parse_numstat(bytes: &[u8]) -> Result<Vec<(GitPath, usize, usize)>> {
+    let mut records = bytes.split(|byte| *byte == 0).peekable();
+    let mut stats = Vec::new();
+    while let Some(record) = records.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let mut fields = record.splitn(3, |byte| *byte == b'\t');
+        let (Some(added), Some(removed), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            anyhow::bail!("invalid numstat record");
+        };
+        let path = if path.is_empty() {
+            records.next().context("missing numstat rename source")?;
+            records
+                .next()
+                .context("missing numstat rename destination")?
+        } else {
+            path
+        };
+        let count = |bytes| {
+            std::str::from_utf8(bytes)
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0)
+        };
+        stats.push((
+            GitPath::from_bytes(path.to_vec()),
+            count(added),
+            count(removed),
+        ));
+    }
+    Ok(stats)
+}
+
+pub(super) fn git_output_with_paths(
+    workdir: &Path,
+    args: &[&str],
+    paths: &[GitPath],
+) -> Result<std::process::Output> {
+    let mut command = Command::new("git");
+    command
+        .arg("--literal-pathspecs")
+        .args(args)
+        .current_dir(workdir);
+    for path in paths {
+        command.arg(path.to_os_string()?);
+    }
+    command
+        .output()
+        .with_context(|| format!("run git {} with paths", args.join(" ")))
+}
+
+/// Content-only reverse application must keep the index entry at the new name.
+/// Reuse Git's own path quoting from the destination header, including tabs,
+/// newlines and non-UTF-8 names, rather than quoting display strings ourselves.
+pub(super) fn rename_content_patch(diff: &str) -> Result<String> {
+    let destination = diff
+        .lines()
+        .find_map(|line| line.strip_prefix("+++ "))
+        .context("rename has no content hunk")?;
+    let source = if let Some(rest) = destination.strip_prefix("b/") {
+        format!("a/{rest}")
+    } else if let Some(rest) = destination.strip_prefix("\"b/") {
+        format!("\"a/{rest}")
+    } else {
+        anyhow::bail!("unsupported rename destination header")
+    };
+    let mut result = String::new();
+    for line in diff.lines() {
+        if line.starts_with("similarity index ")
+            || line.starts_with("rename from ")
+            || line.starts_with("rename to ")
+        {
+            continue;
+        }
+        if line.starts_with("diff --git ") {
+            result.push_str(&format!("diff --git {source} {destination}"));
+        } else if line.starts_with("--- ") {
+            result.push_str(&format!("--- {source}"));
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    Ok(result)
 }

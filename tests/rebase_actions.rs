@@ -2452,3 +2452,553 @@ fn status_expands_untracked_directories_and_does_not_write_the_index() {
         .unwrap();
     assert!(diff.contains("+nested file"));
 }
+
+fn renamed_file_repository(edited: bool) -> TempDir {
+    let repository = tempfile::tempdir().unwrap();
+    let path = repository.path();
+    git_ok(path, &["init", "--quiet", "--initial-branch=main"]);
+    configure_user(path);
+    let text = (0..30)
+        .map(|n| format!("original line {n}\n"))
+        .collect::<String>();
+    std::fs::write(path.join("old name.txt"), &text).unwrap();
+    git_ok(path, &["add", "."]);
+    git_ok(path, &["commit", "--quiet", "-m", "base"]);
+    git_ok(path, &["mv", "old name.txt", "new name.txt"]);
+    if edited {
+        std::fs::write(
+            path.join("new name.txt"),
+            text.replace("original line 10\n", "edited line 10\n"),
+        )
+        .unwrap();
+        git_ok(path, &["add", "."]);
+    }
+    // Our explicit detection must also work when the user's config disables it.
+    git_ok(path, &["config", "diff.renames", "false"]);
+    git_ok(path, &["config", "status.renames", "false"]);
+    repository
+}
+
+#[test]
+fn renamed_files_preserve_identity_and_only_count_content_edits() {
+    for edited in [false, true] {
+        let repository = renamed_file_repository(edited);
+        let path = repository.path();
+        let backend = backend::open(path).unwrap();
+        let new_path = GitPath::from("new name.txt");
+        let status = backend.status().unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].index, 'R');
+        assert_eq!(status[0].path, new_path);
+        assert_eq!(status[0].original_path, Some(GitPath::from("old name.txt")));
+        let expected = if edited { (1, 1) } else { (0, 0) };
+        assert_eq!(backend.diff_stats(&new_path, true).unwrap(), expected);
+        let stats = backend.status_diff_stats(&status).unwrap();
+        assert_eq!(stats.len(), 2);
+        let staged = stats.iter().find(|stat| stat.staged).unwrap();
+        assert_eq!((staged.added, staged.removed), expected);
+        let unstaged = stats.iter().find(|stat| !stat.staged).unwrap();
+        assert_eq!((unstaged.added, unstaged.removed), (0, 0));
+        assert_eq!(
+            backend.diff_hunk_counts(&new_path).unwrap(),
+            (usize::from(edited), 0)
+        );
+        assert_eq!(
+            backend.status_hunk_counts(&status).unwrap()[0].1,
+            (usize::from(edited), 0)
+        );
+        let diff = backend.diff(&new_path, DiffTarget::Index).unwrap();
+        assert!(diff.contains("rename from old name.txt"), "{diff}");
+        assert_eq!(diff.contains("@@"), edited);
+        git_ok(path, &["commit", "--quiet", "-m", "rename"]);
+        let commit = git_ok(path, &["rev-parse", "HEAD"]);
+        let files = backend.commit_files(&commit).unwrap();
+        assert_eq!(files, status);
+        assert_eq!(
+            backend.commit_diff_stats(&commit).unwrap(),
+            vec![(new_path.clone(), expected.0, expected.1)]
+        );
+        let diff = backend.commit_diff(&commit, &new_path).unwrap();
+        assert!(diff.contains("rename to new name.txt"), "{diff}");
+        assert_eq!(diff.contains("@@"), edited);
+    }
+}
+
+#[test]
+fn unstaging_a_rename_restores_both_index_paths_and_keeps_working_content() {
+    let repository = renamed_file_repository(true);
+    let path = repository.path();
+    let backend = backend::open(path).unwrap();
+    let content = std::fs::read(path.join("new name.txt")).unwrap();
+    backend.unstage(&GitPath::from("new name.txt")).unwrap();
+    assert!(git_ok(path, &["diff", "--cached", "--name-only"]).is_empty());
+    assert_eq!(std::fs::read(path.join("new name.txt")).unwrap(), content);
+    assert!(!path.join("old name.txt").exists());
+}
+
+#[test]
+fn partial_unstaging_of_a_rename_keeps_the_rename_staged() {
+    let repository = renamed_file_repository(true);
+    let path = repository.path();
+    let backend = backend::open(path).unwrap();
+    let new_path = GitPath::from("new name.txt");
+    let content = std::fs::read(path.join("new name.txt")).unwrap();
+    backend.apply_hunk(&new_path, DiffTarget::Index, 0).unwrap();
+    let status = backend.status().unwrap();
+    assert_eq!(status.len(), 1);
+    assert_eq!((status[0].index, status[0].worktree), ('R', 'M'));
+    assert_eq!(backend.diff_stats(&new_path, true).unwrap(), (0, 0));
+    assert_eq!(backend.diff_stats(&new_path, false).unwrap(), (1, 1));
+    assert_eq!(std::fs::read(path.join("new name.txt")).unwrap(), content);
+}
+
+#[test]
+fn renamed_paths_with_tabs_newlines_and_pathspec_characters_keep_accurate_diffs() {
+    for line_mode in [false, true] {
+        let repository = renamed_file_repository(true);
+        let path = repository.path();
+        let destination = "literal[1]\tnew\n.txt";
+        git_ok(path, &["mv", "new name.txt", destination]);
+        let backend = backend::open(path).unwrap();
+        let new_path = GitPath::from(destination);
+        let entries = backend.status().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, new_path);
+        assert_eq!(backend.diff_stats(&new_path, true).unwrap(), (1, 1));
+        assert_eq!(backend.status_hunk_counts(&entries).unwrap()[0].1, (1, 0));
+        if line_mode {
+            backend
+                .apply_diff_line(
+                    &new_path,
+                    DiffTarget::Index,
+                    &DiffLineSelection {
+                        old_line: Some(11),
+                        new_line: None,
+                        text: "-original line 10".into(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(backend.diff_stats(&new_path, true).unwrap(), (1, 0));
+        } else {
+            backend.apply_hunk(&new_path, DiffTarget::Index, 0).unwrap();
+            assert_eq!(backend.diff_stats(&new_path, true).unwrap(), (0, 0));
+        }
+        assert_eq!(backend.status().unwrap()[0].index, 'R');
+        assert!(path.join(destination).is_file());
+        assert!(!path.join("old name.txt").exists());
+    }
+}
+
+#[test]
+fn merge_commit_rename_is_compared_with_the_first_parent() {
+    let repository = renamed_file_repository(true);
+    let path = repository.path();
+    git_ok(path, &["checkout", "-b", "side"]);
+    git_ok(path, &["commit", "--quiet", "-m", "rename on side"]);
+    git_ok(path, &["checkout", "main"]);
+    std::fs::write(path.join("main-only.txt"), "main\n").unwrap();
+    git_ok(path, &["add", "."]);
+    git_ok(path, &["commit", "--quiet", "-m", "main work"]);
+    git_ok(path, &["merge", "--no-ff", "side", "-m", "merge rename"]);
+    let commit = git_ok(path, &["rev-parse", "HEAD"]);
+    let backend = backend::open(path).unwrap();
+    let files = backend.commit_files(&commit).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "new name.txt");
+    assert_eq!(files[0].original_path, Some(GitPath::from("old name.txt")));
+    assert_eq!(
+        backend.commit_diff_stats(&commit).unwrap(),
+        vec![(GitPath::from("new name.txt"), 1, 1)]
+    );
+    let diff = backend.commit_diff(&commit, &files[0].path).unwrap();
+    assert!(diff.contains("rename from old name.txt"), "{diff}");
+    assert!(diff.contains("+edited line 10"), "{diff}");
+}
+
+#[test]
+fn autosquash_fixup_rewrites_the_target_and_preserves_tip_content() {
+    for root_target in [false, true] {
+        let (repo, target, _) = repository();
+        let path = repo.path();
+        let target = if root_target {
+            git_ok(path, &["rev-list", "--max-parents=0", "HEAD"])
+        } else {
+            target
+        };
+        std::fs::write(path.join("fixup.txt"), "staged correction\n").unwrap();
+        git_ok(path, &["add", "fixup.txt"]);
+        let backend = backend::open(path).unwrap();
+        let plan = backend.prepare_autosquash(&target, true).unwrap();
+        assert_eq!(plan.staged_files, 1);
+        assert_eq!(
+            backend.execute_autosquash(&plan).unwrap(),
+            RebaseOutcome::Completed
+        );
+        assert_eq!(git_ok(path, &["rev-list", "--count", "HEAD"]), "3");
+        assert_eq!(
+            std::fs::read_to_string(path.join("file.txt")).unwrap(),
+            "tip\n"
+        );
+        assert_eq!(
+            git_ok(
+                path,
+                &[
+                    "show",
+                    if root_target {
+                        "HEAD~2:fixup.txt"
+                    } else {
+                        "HEAD~1:fixup.txt"
+                    }
+                ]
+            ),
+            "staged correction"
+        );
+        assert!(!backend.rebase_in_progress().unwrap());
+    }
+}
+
+#[test]
+fn autosquash_existing_fixups_and_merge_topology_are_preserved() {
+    let (repo, merge) = merge_repository();
+    let path = repo.path();
+    let target = git_ok(path, &["rev-parse", &format!("{merge}^1")]);
+    let backend = backend::open(path).unwrap();
+    std::fs::write(path.join("correction.txt"), "correction\n").unwrap();
+    git_ok(path, &["add", "."]);
+    backend.commit("", "", false, Some(&target)).unwrap();
+    let plan = backend.prepare_autosquash(&target, false).unwrap();
+    backend.execute_autosquash(&plan).unwrap();
+    assert_eq!(
+        git_ok(path, &["rev-list", "--count", "--merges", "HEAD"]),
+        "1"
+    );
+    assert_eq!(
+        std::fs::read_to_string(path.join("correction.txt")).unwrap(),
+        "correction\n"
+    );
+    assert!(!git_ok(path, &["log", "--format=%s"]).contains("fixup!"));
+    assert!(backend.prepare_autosquash(&target, false).is_err());
+}
+
+#[test]
+fn autosquash_rejects_stale_confirmation_without_creating_a_commit() {
+    let (repo, target, head) = repository();
+    let path = repo.path();
+    let backend = backend::open(path).unwrap();
+    std::fs::write(path.join("fixup.txt"), "one\n").unwrap();
+    git_ok(path, &["add", "."]);
+    let plan = backend.prepare_autosquash(&target, true).unwrap();
+    std::fs::write(path.join("fixup.txt"), "two\n").unwrap();
+    git_ok(path, &["add", "."]);
+    assert!(backend.execute_autosquash(&plan).is_err());
+    assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), head);
+    assert!(!backend.rebase_in_progress().unwrap());
+}
+
+#[test]
+fn conflict_resolution_undo_restores_stages_and_refuses_external_edits() {
+    let repo = conflicted_repository();
+    let path = repo.path();
+    let backend = backend::open(path).unwrap();
+    let file = GitPath::from("file.txt");
+    let before = backend.conflict_checkpoint(&file).unwrap();
+    backend
+        .resolve_conflict(&file, ConflictSide::Theirs)
+        .unwrap();
+    let after = backend.conflict_checkpoint(&file).unwrap();
+    assert!(git_ok(path, &["ls-files", "-u"]).is_empty());
+    backend
+        .restore_conflict_checkpoint(&before, &after)
+        .unwrap();
+    assert_eq!(backend.conflict_checkpoint(&file).unwrap(), before);
+    backend.resolve_conflict(&file, ConflictSide::Ours).unwrap();
+    let after = backend.conflict_checkpoint(&file).unwrap();
+    std::fs::write(path.join("file.txt"), "external edit\n").unwrap();
+    assert!(backend
+        .restore_conflict_checkpoint(&before, &after)
+        .is_err());
+    assert_eq!(
+        std::fs::read_to_string(path.join("file.txt")).unwrap(),
+        "external edit\n"
+    );
+}
+
+#[test]
+fn background_fetch_updates_and_prunes_without_changing_head_or_weakening_a_lease() {
+    let (repo, _, _) = repository();
+    let path = repo.path();
+    let remote_dir = tempfile::tempdir().unwrap();
+    let remote = remote_dir.path().join("remote.git");
+    git_ok(
+        path,
+        &["clone", "--quiet", "--bare", ".", remote.to_str().unwrap()],
+    );
+    git_ok(path, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    let backend = backend::open(path).unwrap();
+    backend.fetch("origin").unwrap();
+    let expected = backend.remote_branch_tip("origin", "main").unwrap();
+    let head = git_ok(path, &["rev-parse", "HEAD"]);
+    git_ok(path, &["branch", "gone"]);
+    git_ok(path, &["push", "origin", "gone"]);
+    backend.fetch("origin").unwrap();
+    let peer = remote_dir.path().join("peer");
+    git_ok(
+        path,
+        &[
+            "clone",
+            "--quiet",
+            remote.to_str().unwrap(),
+            peer.to_str().unwrap(),
+        ],
+    );
+    configure_peer(&peer);
+    std::fs::write(peer.join("peer.txt"), "peer\n").unwrap();
+    git_ok(&peer, &["add", "."]);
+    git_ok(&peer, &["commit", "--quiet", "-m", "peer"]);
+    git_ok(&peer, &["push", "origin", "main"]);
+    git_ok(&peer, &["push", "origin", "--delete", "gone"]);
+    let peer_head = git_ok(&peer, &["rev-parse", "HEAD"]);
+    git_ok(path, &["remote", "add", "skipped", "/does/not/exist"]);
+    git_ok(path, &["config", "remote.skipped.skipFetchAll", "true"]);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(backend.fetch_background(&cancel).unwrap(), 1);
+    assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        backend.remote_branch_tip("origin", "main").unwrap(),
+        Some(peer_head.clone())
+    );
+    assert!(
+        !git(path, &["show-ref", "--verify", "refs/remotes/origin/gone"])
+            .status
+            .success()
+    );
+    assert!(backend
+        .push_with_lease("origin", "main", expected.as_deref())
+        .is_err());
+    assert_eq!(
+        git_ok(&peer, &["ls-remote", "origin", "refs/heads/main"])
+            .split_whitespace()
+            .next(),
+        Some(peer_head.as_str())
+    );
+    assert_eq!(
+        backend.auto_fetch_interval().unwrap(),
+        Some(std::time::Duration::from_secs(120))
+    );
+    git_ok(path, &["config", "figit.fetchInterval", "17"]);
+    assert_eq!(
+        backend.auto_fetch_interval().unwrap(),
+        Some(std::time::Duration::from_secs(17))
+    );
+    git_ok(path, &["config", "figit.autoFetch", "false"]);
+    assert_eq!(backend.auto_fetch_interval().unwrap(), None);
+}
+
+#[test]
+fn autosquash_conflicts_leave_a_recoverable_fixup_and_can_be_aborted() {
+    let (repo, target, old_head) = repository();
+    let path = repo.path();
+    std::fs::write(path.join("file.txt"), "correction based on tip\n").unwrap();
+    git_ok(path, &["add", "file.txt"]);
+    let backend = backend::open(path).unwrap();
+    let plan = backend.prepare_autosquash(&target, true).unwrap();
+    assert!(backend.execute_autosquash(&plan).is_err());
+    assert!(backend.rebase_in_progress().unwrap());
+    assert!(!git_ok(path, &["ls-files", "-u"]).is_empty());
+    backend.abort_rebase().unwrap();
+    assert!(!backend.rebase_in_progress().unwrap());
+    assert_ne!(git_ok(path, &["rev-parse", "HEAD"]), old_head);
+    assert!(git_ok(path, &["log", "-1", "--format=%s"]).starts_with("fixup! target commit"));
+    assert_eq!(
+        std::fs::read_to_string(path.join("file.txt")).unwrap(),
+        "correction based on tip\n"
+    );
+}
+
+#[test]
+fn background_fetch_can_be_cancelled_before_a_foreground_operation() {
+    use std::os::unix::fs::PermissionsExt;
+    let (repo, _, _) = repository();
+    let path = repo.path();
+    let script = path.join("slow-upload-pack");
+    std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git_ok(path, &["remote", "add", "origin", "."]);
+    git_ok(
+        path,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            script.to_str().unwrap(),
+        ],
+    );
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let signal = cancel.clone();
+    let thread = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        signal.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let start = std::time::Instant::now();
+    assert!(backend::open(path)
+        .unwrap()
+        .fetch_background(&cancel)
+        .is_err());
+    thread.join().unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+}
+
+#[test]
+fn first_branch_push_sets_upstream_for_subsequent_cli_pushes_in_all_modes() {
+    for mode in [0, 1, 2] {
+        let (repo, _, _) = repository();
+        let path = repo.path();
+        let remote_dir = tempfile::tempdir().unwrap();
+        git_ok(
+            remote_dir.path(),
+            &["init", "--quiet", "--bare", "--initial-branch=main"],
+        );
+        git_ok(
+            path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote_dir.path().to_str().unwrap(),
+            ],
+        );
+        git_ok(path, &["checkout", "-b", "ago/bison-update"]);
+        let backend = backend::open(path).unwrap();
+        backend.push("origin", "ago/bison-update", mode).unwrap();
+        assert_eq!(
+            git_ok(path, &["config", "branch.ago/bison-update.remote"]),
+            "origin"
+        );
+        assert_eq!(
+            git_ok(path, &["config", "branch.ago/bison-update.merge"]),
+            "refs/heads/ago/bison-update"
+        );
+        assert_eq!(
+            git_ok(path, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+            "origin/ago/bison-update"
+        );
+        git_ok(path, &["push"]);
+    }
+}
+
+#[test]
+fn pushing_an_already_published_branch_repairs_missing_tracking() {
+    let (repo, _, _) = repository();
+    let path = repo.path();
+    let remote_dir = tempfile::tempdir().unwrap();
+    git_ok(
+        remote_dir.path(),
+        &["init", "--quiet", "--bare", "--initial-branch=main"],
+    );
+    git_ok(
+        path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote_dir.path().to_str().unwrap(),
+        ],
+    );
+    git_ok(path, &["checkout", "-b", "topic"]);
+    git_ok(path, &["push", "origin", "topic"]);
+    assert!(!git(path, &["config", "--get", "branch.topic.remote"])
+        .status
+        .success());
+    backend::open(path)
+        .unwrap()
+        .push("origin", "topic", 0)
+        .unwrap();
+    assert_eq!(
+        git_ok(path, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/topic"
+    );
+    git_ok(path, &["push"]);
+}
+
+#[test]
+fn pushing_to_another_remote_preserves_the_existing_upstream() {
+    let (repo, _, _) = repository();
+    let path = repo.path();
+    let origin = tempfile::tempdir().unwrap();
+    let backup = tempfile::tempdir().unwrap();
+    for (name, directory) in [("origin", origin.path()), ("backup", backup.path())] {
+        git_ok(
+            directory,
+            &["init", "--quiet", "--bare", "--initial-branch=main"],
+        );
+        git_ok(path, &["remote", "add", name, directory.to_str().unwrap()]);
+    }
+    git_ok(path, &["push", "--set-upstream", "origin", "main"]);
+    backend::open(path)
+        .unwrap()
+        .push("backup", "main", 0)
+        .unwrap();
+    assert_eq!(git_ok(path, &["config", "branch.main.remote"]), "origin");
+    assert_eq!(
+        git_ok(path, &["config", "branch.main.merge"]),
+        "refs/heads/main"
+    );
+}
+
+#[test]
+fn remote_head_alias_does_not_duplicate_branch_pills_or_rename_other_refs() {
+    let (repo, _, head) = repository();
+    let path = repo.path();
+    git_ok(path, &["branch", "-m", "local-main"]);
+    git_ok(path, &["update-ref", "refs/remotes/origin/main", &head]);
+    git_ok(
+        path,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    git_ok(
+        path,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/stable",
+            "refs/remotes/origin/main",
+        ],
+    );
+    git_ok(path, &["tag", "-a", "release-tag", "-m", "annotated tag"]);
+    for packed in [false, true] {
+        if packed {
+            git_ok(path, &["pack-refs", "--all"]);
+        }
+        let graph = backend::open(path).unwrap().build_graph().unwrap();
+        let labels = graph
+            .refs
+            .iter()
+            .filter(|reference| reference.id == head)
+            .map(|reference| reference.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels.iter().filter(|name| **name == "origin/main").count(),
+            1
+        );
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|name| **name == "origin/stable")
+                .count(),
+            1
+        );
+        assert!(!labels.contains(&"origin/HEAD"));
+        assert!(labels.contains(&"local-main"));
+        assert!(labels.contains(&"release-tag"));
+        let pills = graph.display_refs(&head);
+        assert_eq!(
+            pills
+                .iter()
+                .filter(|pill| pill.name == "origin/main")
+                .count(),
+            1
+        );
+    }
+}

@@ -253,8 +253,12 @@ impl App {
                     .iter()
                     .any(|command| command.id == Conflict(ConflictSide::Ours)) =>
             {
-                add(Conflict(ConflictSide::Ours), Some("o/t"), "preview side");
-                add(Conflict(ConflictSide::Base), None, "restore whole file");
+                add(Conflict(ConflictSide::Ours), Some("1/2"), "preview side");
+                add(
+                    Conflict(ConflictSide::OursThenTheirs),
+                    Some("3/4"),
+                    "combine",
+                );
                 add(Editor, None, "editor");
             }
             Focus::Status => {

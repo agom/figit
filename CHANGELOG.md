@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.4 - 2026-11-05
+
+### Added
+
+- Fetch remotes in the background after startup and every two minutes, with configurable timing, quiet failures, pruning, and preserved focus and graph scroll.
+- Add command-palette actions to fix up staged changes and immediately autosquash, or autosquash existing fixup commits, with confirmation and conflict recovery.
+- Preview conflict choices with `1` (ours), `2` (theirs), `3` (ours then theirs), and `4` (theirs then ours); keep `o`/`t` as aliases.
+- Toggle a read-only Base view with `b` and undo applied conflict resolutions with `u`, including after staging. Use `B` to preview restoring the entire file from Base.
+
+### Improved
+
+- Detect staged and committed renames, show both filenames, and count only content edits instead of full deletion and addition. Partial unstaging preserves the rename.
+- Use clearer conflict source labels, explain rebase sides, and open the resolver directly when autosquash stops on conflicts.
+- Give light-theme branch pills and diff highlights a warmer palette with consistent selection colors and verified text contrast.
+- Add a themed screenshot gallery, persistent sun/moon toggle, geometric background, and contact links to the website. Share image assets with the README and generate matching light and dark screenshots.
+- Update rustls to 0.23.46.
+
+### Fixed
+
+- Set the upstream after a successful first branch push, including an up-to-date push that repairs missing tracking, while preserving existing upstreams.
+- Hide the redundant remote HEAD alias and preserve original reference names so `origin/main` does not appear twice.
+- Pin force-with-lease pushes to the remote commit recorded when the push dialog opened, protecting against background fetches changing tracking refs.
+- Keep external repository refresh reliable on macOS when filesystem watcher events are missed.
+- Render screenshot branch pills as continuous rounded surfaces without clipped caps or seams.
+
 ## 0.1.3 - 2026-10-30
 
 ### Improved

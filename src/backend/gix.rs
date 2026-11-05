@@ -9,16 +9,22 @@ use anyhow::{Context, Result};
 use similar::{DiffTag, TextDiff};
 
 use crate::backend::{
-    ConflictResolution, ConflictSide, ConflictVersions, DiffLineSelection, DiffTarget, GraphWindow,
-    PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock, RebasePlanEntry,
-    RebaseTodoAction, UndoInfo,
+    ConflictResolution, ConflictSide, ConflictVersions, DiffLineSelection, DiffTarget, GitBackend,
+    GraphWindow, PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock,
+    RebasePlanEntry, RebaseTodoAction, UndoInfo,
 };
 use crate::core::model::{
     BranchTracking, Commit, GitPath, GraphModel, Oid, RefKind, RefLabel, StatusEntry,
 };
 
+#[path = "gix/autosquash.rs"]
+mod autosquash;
+#[path = "gix/conflict_undo.rs"]
+mod conflict_undo;
 #[path = "gix/helpers.rs"]
 mod helpers;
+#[path = "gix/remote.rs"]
+mod remote;
 use helpers::*;
 
 /// Git's documented fallback for `core.bigFileThreshold`.
@@ -42,15 +48,32 @@ fn parse_hunk_counts(diff: &[u8]) -> HashMap<Vec<u8>, usize> {
     let mut current: Option<Vec<u8>> = None;
     // Git appends a tab after the path on `---`/`+++` lines when the name
     // contains a space, so strip it before matching against the real path.
-    let path_after = |rest: &[u8]| rest.strip_suffix(b"\t").unwrap_or(rest).to_vec();
+    let path_after = |rest: &[u8]| -> Option<Vec<u8>> {
+        let rest = rest.strip_suffix(b"\t").unwrap_or(rest);
+        let decoded = if rest.starts_with(b"\"") {
+            gix::quote::ansi_c::undo(gix::bstr::BStr::new(rest))
+                .ok()?
+                .0
+                .into_owned()
+                .to_vec()
+        } else {
+            rest.to_vec()
+        };
+        decoded
+            .strip_prefix(b"a/")
+            .or_else(|| decoded.strip_prefix(b"b/"))
+            .map(<[u8]>::to_vec)
+    };
     for line in diff.split(|&byte| byte == b'\n') {
         if line.starts_with(b"diff --git ") {
             current = None;
-        } else if let Some(path) = line.strip_prefix(b"+++ b/") {
-            current = Some(path_after(path));
-        } else if let Some(path) = line.strip_prefix(b"--- a/") {
+        } else if let Some(path) = line.strip_prefix(b"+++ ") {
+            if let Some(path) = path_after(path) {
+                current = Some(path);
+            }
+        } else if let Some(path) = line.strip_prefix(b"--- ") {
             if current.is_none() {
-                current = Some(path_after(path));
+                current = path_after(path);
             }
         } else if line.starts_with(b"@@") {
             if let Some(path) = &current {
@@ -146,6 +169,16 @@ impl GixBackend {
             };
             let Some(kind) = kind else { continue };
 
+            // The remote's default-branch pointer is an alias, not another
+            // branch. Peeling a symbolic reference also changes its name, so
+            // suppress this alias before peeling and retain all other names.
+            if kind == RefKind::RemoteBranch
+                && full.ends_with(b"/HEAD")
+                && matches!(reference.target(), gix::refs::TargetRef::Symbolic(_))
+            {
+                continue;
+            }
+
             // Peel tags to the commit they ultimately point at.
             let target = reference.peel_to_id().context("peel ref")?;
             if self.repo.find_commit(target).is_err() {
@@ -153,7 +186,7 @@ impl GixBackend {
             }
             refs.push(RefLabel {
                 kind,
-                name: short_ref_name(reference.name().as_bstr()),
+                name: short_ref_name(gix::bstr::BStr::new(&full)),
                 id: target.to_string(),
             });
         }
@@ -363,7 +396,9 @@ impl GixBackend {
                 index_specs.push(spec);
                 index_paths.push(entry.path.clone());
             }
-            if let Ok(spec) = revision_path("HEAD:", &entry.path) {
+            if let Ok(spec) =
+                revision_path("HEAD:", entry.original_path.as_ref().unwrap_or(&entry.path))
+            {
                 head_specs.push(spec);
                 head_paths.push(entry.path.clone());
             }
@@ -385,6 +420,21 @@ impl GixBackend {
         }
     }
 
+    fn status_paths(&self, path: &GitPath, target: DiffTarget) -> Result<Vec<GitPath>> {
+        let mut paths = vec![path.clone()];
+        if let Some(entry) = self.status()?.into_iter().find(|entry| &entry.path == path) {
+            let code = if target == DiffTarget::Index {
+                entry.index
+            } else {
+                entry.worktree
+            };
+            if matches!(code, 'R' | 'C') {
+                paths.extend(entry.original_path);
+            }
+        }
+        Ok(paths)
+    }
+
     /// `@@` counts per path for one side of the diff, in a single `git diff`.
     fn batch_hunk_counts(
         &self,
@@ -396,12 +446,13 @@ impl GixBackend {
         }
         let mut command = Command::new("git");
         command.args([
+            "--literal-pathspecs",
             "-c",
             "core.quotePath=false",
             "diff",
             "--no-ext-diff",
             "--no-color",
-            "--no-renames",
+            "--find-renames",
             "--unified=3",
         ]);
         if staged {
@@ -476,7 +527,7 @@ impl GixBackend {
             "diff",
             "--numstat",
             "-z",
-            "--no-renames",
+            "--find-renames",
         ]);
         if staged {
             command.arg("--cached");
@@ -496,28 +547,10 @@ impl GixBackend {
             );
         }
 
-        let mut result = HashMap::with_capacity(paths.len());
-        for record in output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|r| !r.is_empty())
-        {
-            let mut fields = record.splitn(3, |byte| *byte == b'\t');
-            let (Some(added), Some(removed), Some(path)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
-                continue;
-            };
-            let added = std::str::from_utf8(added)
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            let removed = std::str::from_utf8(removed)
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            result.insert(GitPath::from_bytes(path.to_vec()), (added, removed));
-        }
+        let result = parse_numstat(&output.stdout)?
+            .into_iter()
+            .map(|(path, added, removed)| (path, (added, removed)))
+            .collect();
         Ok(result)
     }
 
@@ -866,6 +899,7 @@ impl super::GitBackend for GixBackend {
                 "--no-optional-locks",
                 "status",
                 "--porcelain=v1",
+                "--find-renames",
                 "--untracked-files=all",
                 "-z",
             ])
@@ -914,13 +948,26 @@ impl super::GitBackend for GixBackend {
         if self.diff_is_too_large(path, target) {
             return Ok(too_large_diff_notice(path, self.diff_size_limit()));
         }
-        let mut args = vec!["diff", "--no-ext-diff", "--no-color", "--unified=3"];
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--unified=3",
+            "--find-renames",
+        ];
         if target == DiffTarget::Index {
             args.push("--cached");
         }
         args.push("--");
-        let output =
-            git_output_with_path(&self.workdir, &args, path).with_context(|| "run git diff")?;
+        let paths = self.status_paths(path, target)?;
+        if paths
+            .iter()
+            .skip(1)
+            .any(|path| self.diff_is_too_large(path, target))
+        {
+            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+        }
+        let output = git_output_with_paths(&self.workdir, &args, &paths).context("run git diff")?;
         if !output.status.success() {
             anyhow::bail!(
                 "git diff failed: {}",
@@ -952,14 +999,9 @@ impl super::GitBackend for GixBackend {
         {
             return Ok((0, 0));
         }
-        let count_hunks = |target: DiffTarget| -> Result<usize> {
-            let mut args = vec!["diff", "--no-ext-diff", "--no-color", "--unified=3"];
-            if target == DiffTarget::Index {
-                args.push("--cached");
-            }
-            args.push("--");
-            let output = git_output_with_path_checked(&self.workdir, &args, path)?;
-            Ok(String::from_utf8_lossy(&output.stdout)
+        let count_hunks = |target| -> Result<usize> {
+            Ok(self
+                .diff(path, target)?
                 .lines()
                 .filter(|line| line.starts_with("@@"))
                 .count())
@@ -987,7 +1029,9 @@ impl super::GitBackend for GixBackend {
             .iter()
             .filter(|entry| !entry.is_conflict() && entry.index != '?')
             .filter(|entry| !index_large(&entry.path) && !worktree_large(&entry.path))
-            .map(|entry| entry.path.clone())
+            .flat_map(|entry| {
+                std::iter::once(entry.path.clone()).chain(entry.original_path.clone())
+            })
             .collect::<Vec<_>>();
         let staged = self.batch_hunk_counts(&eligible, true)?;
         let unstaged = self.batch_hunk_counts(&eligible, false)?;
@@ -1021,7 +1065,10 @@ impl super::GitBackend for GixBackend {
     }
 
     fn apply_hunk(&self, path: &GitPath, target: DiffTarget, hunk_index: usize) -> Result<()> {
-        let diff = self.diff(path, target)?;
+        let mut diff = self.diff(path, target)?;
+        if target == DiffTarget::Index && self.status_paths(path, target)?.len() > 1 {
+            diff = rename_content_patch(&diff)?;
+        }
         let patch = extract_diff_hunk(&diff, hunk_index)?;
         apply_cached_patch(&self.workdir, &patch, target == DiffTarget::Index)
     }
@@ -1115,7 +1162,8 @@ impl super::GitBackend for GixBackend {
                 index_lines.insert(insertion, selected.clone());
             }
             (DiffTarget::Index, Some(old_line), None) => {
-                let head_spec = revision_path("HEAD:", path)?;
+                let paths = self.status_paths(path, DiffTarget::Index)?;
+                let head_spec = revision_path("HEAD:", paths.last().unwrap_or(path))?;
                 let head_blob = git_output_with_os_arg(&self.workdir, &["show"], head_spec)?;
                 let head_text = String::from_utf8(head_blob.stdout)
                     .map_err(|_| anyhow::anyhow!("line staging supports UTF-8 text files only"))?;
@@ -1248,6 +1296,9 @@ impl super::GitBackend for GixBackend {
             .conflict_versions(path)?
             .context("conflict versions are unavailable")?;
         let content = match side {
+            ConflictSide::OursThenTheirs | ConflictSide::TheirsThenOurs => {
+                anyhow::bail!("combined choices require a selected text conflict")
+            }
             ConflictSide::Base => versions.base,
             ConflictSide::Ours => versions.ours,
             ConflictSide::Theirs => versions.theirs,
@@ -1315,7 +1366,17 @@ impl super::GitBackend for GixBackend {
         if self.repo.head()?.is_unborn() {
             run_git_with_path(&self.workdir, &["rm", "--cached", "-f", "--"], path)
         } else {
-            run_git_with_path(&self.workdir, &["restore", "--staged", "--"], path)
+            let output = git_output_with_paths(
+                &self.workdir,
+                &["restore", "--staged", "--"],
+                &self.status_paths(path, DiffTarget::Index)?,
+            )?;
+            anyhow::ensure!(
+                output.status.success(),
+                "unstage failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(())
         }
     }
 
@@ -1342,26 +1403,23 @@ impl super::GitBackend for GixBackend {
         if self.diff_is_too_large(path, target) {
             return Ok((0, 0));
         }
-        let mut args = vec!["diff"];
+        let mut args = vec!["diff", "--find-renames", "--numstat", "-z"];
         if staged {
             args.push("--cached");
         }
-        args.push("--numstat");
         args.push("--");
-        let output = git_output_with_path(&self.workdir, &args, path)
-            .with_context(|| "run git diff --numstat")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "git diff --numstat failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let first = stdout.lines().next().unwrap_or("");
-        let mut fields = first.split('\t');
-        let added = fields.next().and_then(|n| n.parse().ok()).unwrap_or(0);
-        let removed = fields.next().and_then(|n| n.parse().ok()).unwrap_or(0);
-        Ok((added, removed))
+        let output =
+            git_output_with_paths(&self.workdir, &args, &self.status_paths(path, target)?)?;
+        anyhow::ensure!(
+            output.status.success(),
+            "git diff --numstat failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(parse_numstat(&output.stdout)?
+            .into_iter()
+            .find(|(p, _, _)| p == path)
+            .map(|(_, a, d)| (a, d))
+            .unwrap_or((0, 0)))
     }
 
     fn status_diff_stats(&self, entries: &[StatusEntry]) -> Result<Vec<PathDiffStats>> {
@@ -1381,7 +1439,9 @@ impl super::GitBackend for GixBackend {
                     && entry.index != '?'
                     && !index_large(&entry.path)
             })
-            .map(|entry| entry.path.clone())
+            .flat_map(|entry| {
+                std::iter::once(entry.path.clone()).chain(entry.original_path.clone())
+            })
             .collect::<Vec<_>>();
         let tracked_unstaged = entries
             .iter()
@@ -1391,7 +1451,9 @@ impl super::GitBackend for GixBackend {
                     && entry.worktree != ' '
                     && !worktree_large(&entry.path)
             })
-            .map(|entry| entry.path.clone())
+            .flat_map(|entry| {
+                std::iter::once(entry.path.clone()).chain(entry.original_path.clone())
+            })
             .collect::<Vec<_>>();
         let staged_stats = self.numstat_for_paths(&tracked_staged, true)?;
         let unstaged_stats = self.numstat_for_paths(&tracked_unstaged, false)?;
@@ -1488,7 +1550,7 @@ impl super::GitBackend for GixBackend {
             "diff-tree",
             "--no-commit-id",
             "--name-status",
-            "--no-renames",
+            "--find-renames",
             "-r",
             "-z",
         ];
@@ -1523,9 +1585,20 @@ impl super::GitBackend for GixBackend {
         let mut i = 0;
         while i + 1 < fields.len() {
             let code = fields[i].first().copied().unwrap_or(b'M') as char;
-            let path = GitPath::from_bytes(fields[i + 1].to_vec());
+            let first_path = GitPath::from_bytes(fields[i + 1].to_vec());
+            let (path, original_path) = if matches!(code, 'R' | 'C') {
+                anyhow::ensure!(i + 2 < fields.len(), "rename is missing its destination");
+                i += 1;
+                (
+                    GitPath::from_bytes(fields[i + 1].to_vec()),
+                    Some(first_path),
+                )
+            } else {
+                (first_path, None)
+            };
             entries.push(StatusEntry {
                 path,
+                original_path,
                 index: code,
                 worktree: ' ',
             });
@@ -1539,18 +1612,47 @@ impl super::GitBackend for GixBackend {
         if self.commit_path_is_too_large(commit, path, &parents) {
             return Ok(too_large_diff_notice(path, self.diff_size_limit()));
         }
+        let mut paths = vec![path.clone()];
+        if let Some(entry) = self
+            .commit_files(commit)?
+            .into_iter()
+            .find(|entry| &entry.path == path)
+        {
+            paths.extend(entry.original_path);
+        }
+        if paths
+            .iter()
+            .skip(1)
+            .any(|path| self.commit_path_is_too_large(commit, path, &parents))
+        {
+            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+        }
         let output = if parents.len() > 1 {
-            git_output_with_path(
+            git_output_with_paths(
                 &self.workdir,
-                &["diff", "--no-ext-diff", parents[0].as_str(), commit, "--"],
-                path,
+                &[
+                    "diff",
+                    "--no-ext-diff",
+                    "--find-renames",
+                    parents[0].as_str(),
+                    commit,
+                    "--",
+                ],
+                &paths,
             )
             .with_context(|| "run first-parent merge diff")?
         } else {
-            git_output_with_path(
+            git_output_with_paths(
                 &self.workdir,
-                &["show", "--format=", "--no-ext-diff", commit, "--"],
-                path,
+                &[
+                    "show",
+                    "--format=",
+                    "--no-ext-diff",
+                    "--find-renames",
+                    commit,
+                    "--",
+                ],
+                &paths,
             )
             .with_context(|| "run git show")?
         };
@@ -1571,7 +1673,7 @@ impl super::GitBackend for GixBackend {
                     "diff",
                     "--numstat",
                     "-z",
-                    "--no-renames",
+                    "--find-renames",
                     parents[0].as_str(),
                     commit,
                     "--",
@@ -1586,7 +1688,7 @@ impl super::GitBackend for GixBackend {
                     "--format=",
                     "--numstat",
                     "-z",
-                    "--no-renames",
+                    "--find-renames",
                     commit,
                     "--",
                 ])
@@ -1600,27 +1702,7 @@ impl super::GitBackend for GixBackend {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        let mut stats = Vec::new();
-        for record in output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|record| !record.is_empty())
-        {
-            let fields = record.splitn(3, |byte| *byte == b'\t').collect::<Vec<_>>();
-            let [added, removed, path] = fields.as_slice() else {
-                continue;
-            };
-            let added = std::str::from_utf8(added)
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            let removed = std::str::from_utf8(removed)
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            stats.push((GitPath::from_bytes(path.to_vec()), added, removed));
-        }
-        Ok(stats)
+        parse_numstat(&output.stdout)
     }
 
     fn commit(
@@ -1661,7 +1743,10 @@ impl super::GitBackend for GixBackend {
             anyhow::bail!("a Git rebase is already in progress");
         }
 
-        let status = git_output_checked(&self.workdir, &["status", "--porcelain=v1", "-z"])?;
+        let status = git_output_checked(
+            &self.workdir,
+            &["status", "--porcelain=v1", "--find-renames", "-z"],
+        )?;
         if !status.stdout.is_empty() {
             anyhow::bail!("commit or stash working tree changes before rewriting history");
         }
@@ -1781,7 +1866,10 @@ impl super::GitBackend for GixBackend {
         if rebase_in_progress(&self.workdir)? {
             anyhow::bail!("a Git rebase is already in progress");
         }
-        let status = git_output_checked(&self.workdir, &["status", "--porcelain=v1", "-z"])?;
+        let status = git_output_checked(
+            &self.workdir,
+            &["status", "--porcelain=v1", "--find-renames", "-z"],
+        )?;
         if !status.stdout.is_empty() {
             anyhow::bail!("commit or stash working tree changes before rewriting history");
         }
@@ -2401,22 +2489,52 @@ impl super::GitBackend for GixBackend {
         self.resolve_remote(Some(branch), for_push)
     }
 
+    fn auto_fetch_interval(&self) -> Result<Option<std::time::Duration>> {
+        self.auto_fetch_interval_impl()
+    }
+    fn fetch_background(&self, cancel: &std::sync::atomic::AtomicBool) -> Result<usize> {
+        self.fetch_background_impl(cancel)
+    }
+    fn remote_branch_tip(&self, remote: &str, branch: &str) -> Result<Option<String>> {
+        self.remote_branch_tip_impl(remote, branch)
+    }
+    fn push_with_lease(&self, remote: &str, branch: &str, expected: Option<&str>) -> Result<()> {
+        self.push_with_lease_impl(remote, branch, expected)
+    }
+    fn prepare_autosquash(
+        &self,
+        target: &str,
+        create_fixup: bool,
+    ) -> Result<super::AutosquashPlan> {
+        self.prepare_autosquash_impl(target, create_fixup)
+    }
+    fn execute_autosquash(&self, plan: &super::AutosquashPlan) -> Result<RebaseOutcome> {
+        self.execute_autosquash_impl(plan)
+    }
+    fn conflict_checkpoint(&self, path: &GitPath) -> Result<super::ConflictCheckpoint> {
+        self.conflict_checkpoint_impl(path)
+    }
+    fn restore_conflict_checkpoint(
+        &self,
+        before: &super::ConflictCheckpoint,
+        expected: &super::ConflictCheckpoint,
+    ) -> Result<()> {
+        self.restore_conflict_checkpoint_impl(before, expected)
+    }
+
     fn fetch(&self, remote: &str) -> Result<()> {
         run_git(&self.workdir, ["fetch", "--prune", remote])
     }
 
     fn push(&self, remote: &str, branch: &str, mode: usize) -> Result<()> {
-        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-        let mode = match mode {
-            1 => Some("--force"),
-            2 => Some("--force-with-lease"),
-            _ => None,
-        };
-        if let Some(mode) = mode {
-            run_git(&self.workdir, ["push", mode, remote, refspec.as_str()])
-        } else {
-            run_git(&self.workdir, ["push", remote, refspec.as_str()])
+        if mode == 2 {
+            return self.push_with_lease(
+                remote,
+                branch,
+                self.remote_branch_tip(remote, branch)?.as_deref(),
+            );
         }
+        self.push_branch_impl(remote, branch, (mode == 1).then_some("--force"))
     }
 
     fn push_tag(&self, remote: &str, tag: &str, mode: usize) -> Result<()> {
@@ -2434,6 +2552,35 @@ impl super::GitBackend for GixBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_status_preserves_both_names_in_porcelain_order() {
+        let entries =
+            parse_status(b"RM new\tname-\xff.txt\0old\nname-\xfe.txt\0?? next.txt\0").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path.as_bytes(), b"new\tname-\xff.txt");
+        assert_eq!(
+            entries[0].original_path.as_ref().unwrap().as_bytes(),
+            b"old\nname-\xfe.txt"
+        );
+        assert_eq!(entries[1].path, "next.txt");
+        assert!(parse_status(b"R  dest.txt\0").is_err());
+    }
+
+    #[test]
+    fn rename_numstat_consumes_both_nul_paths_and_preserves_next_record() {
+        let stats = parse_numstat(
+            b"2\t1\t\0old\tfile-\xff\0new\nfile-\xfe\0-\t-\tbinary.dat\x003\t4\tordinary.txt\0",
+        )
+        .unwrap();
+        assert_eq!(stats.len(), 3);
+        assert_eq!(
+            stats[0],
+            (GitPath::from_bytes(b"new\nfile-\xfe".to_vec()), 2, 1)
+        );
+        assert_eq!(stats[1], (GitPath::from("binary.dat"), 0, 0));
+        assert_eq!(stats[2], (GitPath::from("ordinary.txt"), 3, 4));
+    }
 
     #[test]
     fn status_parser_preserves_non_utf8_path_bytes() {

@@ -8,6 +8,7 @@ pub(super) struct RefreshState {
     pub in_progress: bool,
     /// Invalidates results started before an internal repository mutation.
     pub generation: u64,
+    pub preserve_scroll: bool,
 }
 
 impl RefreshState {
@@ -21,6 +22,7 @@ impl RefreshState {
             deadline: None,
             in_progress: false,
             generation: 0,
+            preserve_scroll: false,
         }
     }
 }
@@ -85,7 +87,14 @@ impl App {
                     let choose_initial_focus = initial_load;
                     let initial_status_has_changes =
                         choose_initial_focus && !snapshot.status.is_empty();
+                    let scroll = (self.scroll_y, self.scroll_x);
                     self.reload_external_snapshot(snapshot);
+                    if self.refresh.preserve_scroll && !initial_load {
+                        self.scroll_y = scroll.0.min(self.rows.len().saturating_sub(1));
+                        self.scroll_x = scroll.1;
+                        self.scroll_to_selected_graph = false;
+                    }
+                    self.refresh.preserve_scroll = false;
                     if choose_initial_focus {
                         self.focus = if initial_status_has_changes {
                             if self.three_way_view.is_some() {

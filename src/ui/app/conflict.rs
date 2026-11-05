@@ -99,6 +99,7 @@ impl ThreeWayView {
             pending_resolution: None,
             result_preview: false,
             chosen_side: None,
+            show_base: false,
             hunk_index: 0,
             scroll_y: 0,
             scroll_x: 0,
@@ -231,6 +232,7 @@ impl ThreeWayView {
         }
         let cells = &self.rows[row];
         let cell = match side {
+            0 if self.show_base => cells.base.as_ref(),
             0 => cells.ours.as_ref(),
             1 => cells.theirs.as_ref(),
             _ => cells.result.as_ref(),
@@ -313,8 +315,20 @@ impl App {
                     )
                 });
             let short = id.chars().take(7).collect::<String>();
-            branch.map_or(short.clone(), |reference| {
-                format!("{} {short}", reference.name)
+            let branch_width = (usize::from(area.width) / 2).saturating_sub(31).min(24);
+            let identity = branch
+                .filter(|_| branch_width > 0)
+                .map_or(short.clone(), |reference| {
+                    format!("{} {short}", truncate(&reference.name, branch_width))
+                });
+            let subject = self
+                .graph
+                .commits
+                .iter()
+                .find(|commit| commit.id == id)
+                .map(|commit| truncate(&commit.summary, 24));
+            subject.map_or(identity.clone(), |subject| {
+                format!("{identity} · {subject}")
             })
         };
         let ids = self
@@ -340,7 +354,12 @@ impl App {
         let scope = if view.hunks.is_empty() {
             "Whole-file conflict".to_string()
         } else {
-            format!("Hunk {}/{}", view.hunk_index + 1, view.hunks.len())
+            format!(
+                "Hunk {}/{} · {} unresolved",
+                view.hunk_index + 1,
+                view.hunks.len(),
+                view.hunks.len()
+            )
         };
         let prefix = if area.width < 40 {
             "Merge — "
@@ -399,13 +418,36 @@ impl App {
                 if deleted { " (deleted)" } else { "" }
             )
         };
+        let base_title = self
+            .conflict_commits
+            .as_ref()
+            .and_then(|c| c.base.as_ref())
+            .map(|id| source_label(id));
         let ours_title = source_title(
-            "Ours",
-            ids.as_ref().map(|ids| ids.0.as_str()),
-            view.ours_missing,
+            if view.show_base {
+                "Base"
+            } else if self.rebase_active {
+                "1 Ours (new base)"
+            } else {
+                "1 Ours"
+            },
+            if view.show_base {
+                base_title.as_deref()
+            } else {
+                ids.as_ref().map(|ids| ids.0.as_str())
+            },
+            if view.show_base {
+                view.versions.base.is_none()
+            } else {
+                view.ours_missing
+            },
         );
         let theirs_title = source_title(
-            "Theirs",
+            if self.rebase_active {
+                "2 Theirs (replayed)"
+            } else {
+                "2 Theirs"
+            },
             ids.as_ref().map(|ids| ids.1.as_str()),
             view.theirs_missing,
         );
@@ -429,6 +471,8 @@ impl App {
                         }
                     }
                     Some(ConflictSide::Base) => "Restore entire file from Base — preview",
+                    Some(ConflictSide::OursThenTheirs) => "Result — Preview Ours + Theirs",
+                    Some(ConflictSide::TheirsThenOurs) => "Result — Preview Theirs + Ours",
                     None => "Result — Preview Edited",
                 }
             }
@@ -448,9 +492,23 @@ impl App {
         let active = view.active_range();
         for side in 0..3 {
             let chosen = if side == 0 {
-                view.chosen_side == Some(ConflictSide::Ours)
+                matches!(
+                    view.chosen_side,
+                    Some(
+                        ConflictSide::Ours
+                            | ConflictSide::OursThenTheirs
+                            | ConflictSide::TheirsThenOurs
+                    )
+                )
             } else {
-                view.chosen_side == Some(ConflictSide::Theirs)
+                matches!(
+                    view.chosen_side,
+                    Some(
+                        ConflictSide::Theirs
+                            | ConflictSide::OursThenTheirs
+                            | ConflictSide::TheirsThenOurs
+                    )
+                )
             };
             let border = if side < 2 {
                 conflict_side_border_style(colors[side], chosen, &palette)
@@ -463,6 +521,7 @@ impl App {
             {
                 let row = &view.rows[index];
                 let cell = match side {
+                    0 if view.show_base => row.base.as_ref(),
                     0 => row.ours.as_ref(),
                     1 => row.theirs.as_ref(),
                     _ => row.result.as_ref(),
@@ -514,11 +573,6 @@ impl App {
                 );
             }
         }
-        let scope = if !view.resolves_hunks {
-            "preview file"
-        } else {
-            "preview conflict"
-        };
         if !resolver_focused {
             frame.render_widget(
                 Paragraph::new(styled_key_hints_fitting(
@@ -539,9 +593,21 @@ impl App {
         };
         add(ConfirmConflict, None, "confirm");
         add(CancelConflict, None, "cancel preview");
-        add(Conflict(ConflictSide::Ours), Some("o/t"), scope);
+        add(Conflict(ConflictSide::Ours), Some("1"), "ours");
+        add(Conflict(ConflictSide::Theirs), Some("2"), "theirs");
+        add(
+            Conflict(ConflictSide::OursThenTheirs),
+            Some("3"),
+            "ours+theirs",
+        );
+        add(
+            Conflict(ConflictSide::TheirsThenOurs),
+            Some("4"),
+            "theirs+ours",
+        );
         add(PreviousHunk, Some("[/]"), "conflict");
-        add(Conflict(ConflictSide::Base), None, "restore whole file");
+        add(ToggleConflictBase, None, "base view");
+        add(UndoConflict, None, "undo resolution");
         add(Editor, None, "editor");
         actions.push((":", "commands"));
         frame.render_widget(
@@ -584,6 +650,7 @@ pub(super) struct ThreeWayView {
     pub(super) pending_resolution: Option<ConflictResolution>,
     pub(super) result_preview: bool,
     pub(super) chosen_side: Option<ConflictSide>,
+    pub(super) show_base: bool,
     pub(super) hunk_index: usize,
     pub(super) ours_missing: bool,
     pub(super) theirs_missing: bool,
@@ -639,5 +706,34 @@ impl App {
             return None;
         }
         self.conflict_colors()
+    }
+}
+
+impl App {
+    pub(super) fn undo_conflict_resolution(&mut self) {
+        let Some((before, expected)) = self.conflict_undo.last().cloned() else {
+            return;
+        };
+        let path = before.path.clone();
+        self.start_local_job(
+            "Undo conflict resolution",
+            move |backend| backend.restore_conflict_checkpoint(&before, &expected),
+            move |app, completed| match &completed.result {
+                Ok(()) => {
+                    app.conflict_undo.pop();
+                    completed.refresh(app);
+                    app.historical_commit = None;
+                    app.status_section = StatusSection::Unstaged;
+                    if let Some(index) = app.status.iter().position(|entry| entry.path == path) {
+                        app.selected_status = index;
+                        app.selected_statuses.clear();
+                        app.selected_statuses.insert(index);
+                    }
+                    app.focus = Focus::Diff;
+                    app.refresh_diff();
+                }
+                Err(error) => app.show_rebase_error(error.clone()),
+            },
+        );
     }
 }
