@@ -92,8 +92,12 @@ impl App {
     where
         F: FnOnce(&dyn GitBackend) -> anyhow::Result<RebaseOutcome> + Send + 'static,
     {
-        self.start_local_job("Rebase", operation, |app, completed| {
-            match &completed.result {
+        let prefer_resolver = self.commit_dialog.visible()
+            && matches!(self.commit_dialog.mode, CommitMode::Autosquash(_));
+        self.start_local_job(
+            "Rebase",
+            operation,
+            move |app, completed| match &completed.result {
                 Ok(outcome) => {
                     let outcome = outcome.clone();
                     let completed_rebase = matches!(&outcome, RebaseOutcome::Completed);
@@ -119,11 +123,21 @@ impl App {
                         app.rebase_plan = None;
                         app.rebase_active = true;
                         app.rebase_paused = true;
+                        if prefer_resolver && app.three_way_view.is_some() {
+                            app.focus = Focus::Diff;
+                            app.action_error = None;
+                            app.remote_notice = Some((
+                                "Autosquash paused — resolve conflicts, then continue or abort"
+                                    .into(),
+                                Instant::now(),
+                            ));
+                            return;
+                        }
                     }
                     app.show_rebase_error(error);
                 }
-            }
-        });
+            },
+        );
     }
 
     pub(super) fn apply_rebase_outcome(&mut self, outcome: RebaseOutcome) {

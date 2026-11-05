@@ -78,6 +78,7 @@ impl Tui {
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
         command.env_remove("NO_COLOR");
+        command.env("FIGIT_AUTO_FETCH", "0");
         for (key, value) in env {
             command.env(key, value);
         }
@@ -2108,7 +2109,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
     tui.wait_for("Ours");
     tui.wait_for("Theirs");
     tui.wait_for("Result");
-    tui.wait_for("o/t preview conflict");
+    tui.wait_for("1 ours");
     let expanded = tui.contents();
     assert!(
         expanded.contains("Graph"),
@@ -2143,7 +2144,7 @@ fn conflict_resolver_panel_renders_and_resolves_with_theirs() {
         "side panes should render clean source versions:\n{expanded}"
     );
     assert!(
-        expanded.contains("o/t preview conflict"),
+        expanded.contains("1 ours"),
         "side-choice hints belong in the merge panel:\n{expanded}"
     );
     assert!(
@@ -2456,7 +2457,7 @@ fn graph_selection_keeps_the_active_conflict_resolver_visible() {
     // commands while the graph has focus.
     tui.wait_for_title_focus("Graph");
     tui.send(b"\t");
-    tui.wait_for("o/t preview conflict");
+    tui.wait_for("1 ours");
     tui.send(b":previewtheirs\r");
     tui.wait_for("Result — Preview Theirs");
     let screen = tui.contents();
@@ -2555,7 +2556,7 @@ fn conflict_hunks_can_be_chosen_and_confirmed_individually() {
     );
     assert!(!after_first.contains("second theirs"));
 
-    tui.send(b"b");
+    tui.send(b"B");
     tui.wait_for("Restore entire file from Base");
     assert_eq!(
         std::fs::read_to_string(repository.path().join("file.txt")).unwrap(),
@@ -3746,4 +3747,137 @@ fn slow_commit_hooks_keep_navigation_responsive_and_preserve_failed_drafts() {
         }
         tui.quit();
     }
+}
+
+#[test]
+fn conflict_number_choices_base_view_and_undo_work_in_the_terminal() {
+    let repository = init_conflict_repository();
+    let path = repository.path();
+    let original = std::fs::read(path.join("file.txt")).unwrap();
+    let mut tui = Tui::launch(path);
+    tui.wait_for("1 ours");
+    tui.send(b"b");
+    tui.wait_for("Base ");
+    assert_eq!(std::fs::read(path.join("file.txt")).unwrap(), original);
+    tui.send(b"b3");
+    tui.wait_for("Result — Preview Ours + Theirs");
+    assert_eq!(std::fs::read(path.join("file.txt")).unwrap(), original);
+    tui.send(b"\r");
+    tui.wait_for("Staged (1)");
+    assert_eq!(
+        std::fs::read_to_string(path.join("file.txt")).unwrap(),
+        "ours\ntheirs\n"
+    );
+    tui.send(b"u");
+    tui.wait_for("Three-way merge — file.txt");
+    tui.wait_for("1 ours");
+    assert_eq!(std::fs::read(path.join("file.txt")).unwrap(), original);
+    tui.send(b"4");
+    tui.wait_for("Result — Preview Theirs + Ours");
+    tui.send(b"\r");
+    tui.wait_for("Staged (1)");
+    assert_eq!(
+        std::fs::read_to_string(path.join("file.txt")).unwrap(),
+        "theirs\nours\n"
+    );
+    tui.quit();
+}
+
+#[test]
+fn command_palette_runs_fixup_and_autosquash_after_confirmation() {
+    let repository = init_linear_repository();
+    let path = repository.path();
+    let original_head = git_ok(path, &["rev-parse", "HEAD"]);
+    std::fs::write(path.join("fixup.txt"), "correction\n").unwrap();
+    git_ok(path, &["add", "fixup.txt"]);
+    let mut tui = Tui::launch_sized(path, None, &[], 120, 40);
+    tui.wait_for("fixup.txt");
+    tui.send(b"\t\x1b[B\x1b[B");
+    tui.wait_for_title_focus("Graph");
+    tui.wait_for_selected_text("target commit");
+    tui.send(b":fixupandautosquash\r");
+    tui.wait_for("Fixup / Autosquash");
+    assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), original_head);
+    tui.send(b"\r");
+    tui.wait_for_operation("Fixup / Autosquash");
+    tui.wait_for_title_focus("Graph");
+    assert_eq!(git_ok(path, &["rev-list", "--count", "HEAD"]), "3");
+    assert_eq!(git_ok(path, &["show", "HEAD~1:fixup.txt"]), "correction");
+    assert!(!git_ok(path, &["log", "--format=%s"]).contains("fixup!"));
+    tui.quit();
+}
+
+#[test]
+fn periodic_fetch_refreshes_remote_history_without_moving_the_selection() {
+    let repository = init_linear_repository();
+    let path = repository.path();
+    let remote_dir = TempDir::new().unwrap();
+    let remote = remote_dir.path().join("remote.git");
+    let peer = remote_dir.path().join("peer");
+    git_ok(
+        path,
+        &["clone", "--quiet", "--bare", ".", remote.to_str().unwrap()],
+    );
+    git_ok(path, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git_ok(path, &["fetch", "--quiet", "origin"]);
+    git_ok(path, &["config", "figit.fetchInterval", "10"]);
+    git_ok(
+        path,
+        &[
+            "clone",
+            "--quiet",
+            remote.to_str().unwrap(),
+            peer.to_str().unwrap(),
+        ],
+    );
+    configure_user(&peer);
+    let head = git_ok(path, &["rev-parse", "HEAD"]);
+    let advance = |message: &str| {
+        std::fs::write(peer.join("peer.txt"), message).unwrap();
+        git_ok(&peer, &["add", "."]);
+        git_ok(&peer, &["commit", "--quiet", "-m", message]);
+        git_ok(&peer, &["push", "--quiet", "origin", "main"]);
+        git_ok(&peer, &["rev-parse", "--short=7", "HEAD"])
+    };
+    let first = advance("remote-new");
+    let mut tui = Tui::launch_with_env(path, None, &[("FIGIT_AUTO_FETCH", "1")]);
+    tui.wait_for("tip commit");
+    tui.wait_for_title_focus("Graph");
+    tui.send(b"\x1b[B");
+    tui.wait_for_selected_text("target commit");
+    tui.wait_for(&first);
+    tui.wait_for_selected_text("target commit");
+    let second = advance("remote-next");
+    tui.wait_for(&second);
+    tui.wait_for_selected_text("target commit");
+    assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), head);
+    tui.quit();
+}
+
+#[test]
+fn autosquash_conflict_opens_the_resolver_and_abort_preserves_the_fixup() {
+    let repository = init_linear_repository();
+    let path = repository.path();
+    std::fs::write(path.join("file.txt"), "correction based on tip\n").unwrap();
+    git_ok(path, &["add", "file.txt"]);
+    let mut tui = Tui::launch_sized(path, None, &[], 120, 40);
+    tui.wait_for("file.txt");
+    tui.send(b"\t\x1b[B\x1b[B");
+    tui.wait_for_selected_text("target commit");
+    tui.send(b":fixupandautosquash\r");
+    tui.wait_for("Fixup / Autosquash");
+    tui.send(b"\r");
+    tui.wait_for("Three-way merge — file.txt");
+    tui.wait_for("1 ours");
+    assert!(!tui.contents().contains("Rebase error"));
+    tui.send(b"\x01");
+    tui.wait_for("Abort rebase");
+    tui.send(b"\r");
+    tui.wait_for_operation("Abort rebase");
+    assert!(git_ok(path, &["log", "-1", "--format=%s"]).starts_with("fixup! target commit"));
+    assert_eq!(
+        std::fs::read_to_string(path.join("file.txt")).unwrap(),
+        "correction based on tip\n"
+    );
+    tui.quit();
 }

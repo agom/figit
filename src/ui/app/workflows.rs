@@ -203,6 +203,7 @@ impl App {
                 GraphAction::Push => self.push_remote.clone().zip(self.push_target.clone()).map(
                     |(remote, target)| RemoteOperation::Push {
                         mode: self.push_mode,
+                        expected: self.push_expected.clone(),
                         remote,
                         target,
                     },
@@ -330,6 +331,7 @@ impl App {
                                 mode: 0,
                                 remote,
                                 target: PushTarget::Tag(tag_name),
+                                expected: None,
                             }),
                             None => {
                                 app.action_error = Some(
@@ -533,6 +535,13 @@ impl App {
             ConflictSide::Base => versions.base,
             ConflictSide::Ours => versions.ours,
             ConflictSide::Theirs => versions.theirs,
+            ConflictSide::OursThenTheirs | ConflictSide::TheirsThenOurs => {
+                if !view.resolves_hunks {
+                    self.action_error = Some("Combined choices require a text conflict".into());
+                    return;
+                }
+                versions.ours
+            }
         };
         let mut resolution =
             selected.map_or(ConflictResolution::Delete, ConflictResolution::Content);
@@ -569,6 +578,13 @@ impl App {
         let Some(backend) = self.backend.as_ref() else {
             return;
         };
+        let before = match backend.conflict_checkpoint(&path) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                self.show_rebase_error(error.to_string());
+                return;
+            }
+        };
         let result = (|| -> Result<Vec<u8>> {
             let current = backend.conflict_versions(&path)?.ok_or_else(|| {
                 anyhow::anyhow!("Conflict versions are unavailable; resolution was not staged.")
@@ -603,6 +619,26 @@ impl App {
                 return;
             }
         };
+        if let Some(backend) = self.backend.as_ref() {
+            if let Ok(after) = backend.conflict_checkpoint(&path) {
+                self.conflict_undo.push((before, after));
+                while self.conflict_undo.len() > 20
+                    || self
+                        .conflict_undo
+                        .iter()
+                        .map(|(before, after)| {
+                            before.working.as_ref().map_or(0, Vec::len)
+                                + after.working.as_ref().map_or(0, Vec::len)
+                                + before.index.len()
+                                + after.index.len()
+                        })
+                        .sum::<usize>()
+                        > 32 * 1024 * 1024
+                {
+                    self.conflict_undo.remove(0);
+                }
+            }
+        }
         let remaining_hunks = conflict_hunks(&String::from_utf8_lossy(&current_working)).len();
         if remaining_hunks > 0 {
             if let Some(view) = self
@@ -622,7 +658,14 @@ impl App {
             }
         } else if let Some(backend) = self.backend.as_ref() {
             match backend.stage(&path) {
-                Ok(()) => self.focus_after_conflict_resolution(&path),
+                Ok(()) => {
+                    if let Ok(after) = backend.conflict_checkpoint(&path) {
+                        if let Some((_, expected)) = self.conflict_undo.last_mut() {
+                            *expected = after;
+                        }
+                    }
+                    self.focus_after_conflict_resolution(&path);
+                }
                 Err(error) => self.show_rebase_error(error.to_string()),
             }
         }

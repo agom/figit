@@ -411,8 +411,11 @@ impl App {
             (
                 "Conflicts",
                 &[
-                    ("o / t", "preview ours / theirs"),
-                    ("b", "preview entire file from Base"),
+                    ("1 / 2", "preview ours / theirs"),
+                    ("3 / 4", "ours+theirs / theirs+ours"),
+                    ("b", "toggle read-only Base view"),
+                    ("B", "preview entire file from Base"),
+                    ("u", "undo last resolution"),
                     ("e", "open in editor"),
                     ("Enter", "confirm result"),
                     ("Esc", "cancel preview"),
@@ -1060,7 +1063,9 @@ impl App {
     }
 
     fn render_commit_popup(&self, f: &mut Frame, area: Rect) {
-        let desired_height = if self.commit_dialog.confirming() {
+        let desired_height = if matches!(self.commit_dialog.mode, CommitMode::Autosquash(_)) {
+            12
+        } else if self.commit_dialog.confirming() {
             8
         } else {
             14
@@ -1076,6 +1081,7 @@ impl App {
             CommitMode::Normal => "Commit",
             CommitMode::Amend => "Amend latest",
             CommitMode::Fixup(_) => "Fixup selected commit",
+            CommitMode::Autosquash(_) => "Fixup / Autosquash",
             CommitMode::Reword(_) => "Reword selected commit",
             CommitMode::Edit(_) => "Edit selected commit",
             CommitMode::RebaseReplacement => "Replace edited commit",
@@ -1102,17 +1108,34 @@ impl App {
         if self.commit_dialog.confirming() {
             let target = match &self.commit_dialog.mode {
                 CommitMode::Fixup(target) => target.chars().take(7).collect::<String>(),
+                CommitMode::Autosquash(plan) => plan.target.chars().take(7).collect::<String>(),
                 CommitMode::Edit(target) => target.chars().take(7).collect::<String>(),
                 _ => String::new(),
             };
-            let panes =
-                Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(inner);
+            let panes = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(inner);
             let commit_style = self.button_style(self.commit_field == CommitField::Commit);
             let cancel_style = self.button_style(self.commit_field == CommitField::Cancel);
             let prompt = match &self.commit_dialog.mode {
                 CommitMode::Normal => "Create the commit?".to_string(),
                 CommitMode::Amend => "Amend the latest commit?".to_string(),
                 CommitMode::Fixup(_) => format!("Fixup staged changes into {target}?"),
+                CommitMode::Autosquash(plan) => format!(
+                    "{}{} — {}\nRewrite {} commits; {} staged files.{}",
+                    if plan.create_fixup {
+                        "Fixup staged changes into "
+                    } else {
+                        "Autosquash from "
+                    },
+                    target,
+                    plan.subject,
+                    plan.commits,
+                    plan.staged_files,
+                    if plan.published {
+                        "\nIncludes published history; a force push may be required."
+                    } else {
+                        ""
+                    }
+                ),
                 CommitMode::Reword(_) => {
                     "Reword the selected commit and replay descendants?".to_string()
                 }
@@ -1986,7 +2009,30 @@ impl App {
         let recap_spacing = usize::from(hunk_recap.is_some());
         let suffix_width = stats_width + recap_width + recap_spacing;
         let path_width = width.saturating_sub(glyph_width + 1 + icon_width + 1 + suffix_width + 1);
-        let display_path = truncate_start(&entry.path.display(), path_width);
+        let path_label = if let Some(original) = entry
+            .original_path
+            .as_ref()
+            .filter(|_| matches!(code, 'R' | 'C'))
+        {
+            format!("{} → {}", original.display(), entry.path.display())
+        } else {
+            entry.path.display().into_owned()
+        };
+        let display_path = if let Some(original) = entry.original_path.as_ref().filter(|_| {
+            matches!(code, 'R' | 'C')
+                && path_width >= 7
+                && Line::from(path_label.as_str()).width() > path_width
+        }) {
+            let available = path_width - 3; // Keep the rename arrow visible.
+            let old_width = available / 2;
+            format!(
+                "{} → {}",
+                truncate_start(&original.display(), old_width),
+                truncate_start(&entry.path.display(), available - old_width)
+            )
+        } else {
+            truncate_start(&path_label, path_width)
+        };
         let path_style = selection.patch(if selected {
             self.selection_text_style(active)
         } else {
@@ -2305,7 +2351,17 @@ impl App {
         let content = self.status_line_content();
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         let width = usize::from(self.viewport_width);
-        let version_width = Line::from(version.as_str()).width();
+        let fetch = if width >= 100 {
+            self.auto_fetch.footer()
+        } else {
+            String::new()
+        };
+        let fetch_width = if fetch.is_empty() {
+            0
+        } else {
+            Line::from(fetch.as_str()).width() + 3
+        };
+        let version_width = Line::from(version.as_str()).width() + fetch_width;
         // Keep the actionable modal hints readable on very narrow terminals.
         // Ratatui will clip to the actual frame width when rendering.
         if width > 0 && width < version_width + 12 {
@@ -2327,6 +2383,12 @@ impl App {
             line.push_span(Span::raw(" "));
         } else if !line.spans.is_empty() {
             line.push_span(Span::raw(" "));
+        }
+        if !fetch.is_empty() {
+            line.push_span(Span::styled(
+                format!("{fetch} · "),
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         line.push_span(Span::styled(version, Style::default().fg(Color::DarkGray)));
         line

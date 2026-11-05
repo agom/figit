@@ -97,6 +97,8 @@ pub(super) fn replace_conflict_hunk(
     let replacement = match side {
         ConflictSide::Ours => hunk.ours,
         ConflictSide::Theirs => hunk.theirs,
+        ConflictSide::OursThenTheirs => join_conflict_sides(&hunk.ours, &hunk.theirs),
+        ConflictSide::TheirsThenOurs => join_conflict_sides(&hunk.theirs, &hunk.ours),
         ConflictSide::Base => hunk.base?,
     };
     let mut result = String::with_capacity(text.len());
@@ -200,4 +202,13 @@ pub(super) fn three_way_column(
         ));
     }
     Line::from(spans)
+}
+
+fn join_conflict_sides(first: &str, second: &str) -> String {
+    let separator = if !first.is_empty() && !second.is_empty() && !first.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{first}{separator}{second}")
 }

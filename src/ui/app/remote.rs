@@ -16,6 +16,7 @@ pub(super) enum RemoteOperation {
         mode: usize,
         remote: String,
         target: PushTarget,
+        expected: Option<String>,
     },
 }
 
@@ -107,6 +108,16 @@ impl App {
                 .map(PushTarget::Branch)
                 .or_else(|| self.selected_tag().map(PushTarget::Tag));
         }
+        self.push_expected =
+            self.backend
+                .as_ref()
+                .and_then(|backend| match self.push_target.as_ref() {
+                    Some(PushTarget::Branch(branch)) => backend
+                        .remote_branch_tip(self.push_remote.as_deref().unwrap_or(""), branch)
+                        .ok()
+                        .flatten(),
+                    _ => None,
+                });
         self.open_graph_action(GraphAction::Push);
     }
 
@@ -145,7 +156,12 @@ impl App {
         self.focus = Focus::Graph;
 
         let repository_path_for_load = repository_path.clone();
+        self.auto_fetch
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let gate = self.git_gate.clone();
         thread::spawn(move || {
+            let _guard = gate.lock().unwrap_or_else(|e| e.into_inner());
             let result = (|| -> anyhow::Result<_> {
                 let backend = crate::backend::open(&repository_path)?;
                 match &operation {
@@ -155,7 +171,11 @@ impl App {
                         mode,
                         remote,
                         target,
+                        expected,
                     } => match target {
+                        PushTarget::Branch(branch) if *mode == 2 => {
+                            backend.push_with_lease(remote, branch, expected.as_deref())?
+                        }
                         PushTarget::Branch(branch) => backend.push(remote, branch, *mode)?,
                         PushTarget::Tag(tag) => backend.push_tag(remote, tag, *mode)?,
                     },
@@ -185,6 +205,12 @@ impl App {
                     }
                     match completion.result {
                         Ok(snapshot) => {
+                            if matches!(completion.operation, RemoteOperation::Fetch(_)) {
+                                self.auto_fetch.last_success = Some(Instant::now());
+                                self.auto_fetch.last_error = None;
+                                self.auto_fetch.deadline =
+                                    Some(Instant::now() + self.auto_fetch.interval);
+                            }
                             self.reload_from_snapshot(snapshot);
                             self.restore_graph_selection(completion.selection);
                             self.remote_notice = Some((

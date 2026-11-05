@@ -159,6 +159,7 @@ impl App {
                 view.hunk_index = previous.hunk_index.min(view.hunks.len().saturating_sub(1));
                 view.scroll_y = previous.scroll_y;
                 view.scroll_x = previous.scroll_x;
+                view.show_base = previous.show_base;
                 view.clamp_scroll();
                 Some(view)
             } else {

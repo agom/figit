@@ -107,6 +107,28 @@ pub trait GitBackend {
         for_push: bool,
     ) -> anyhow::Result<Option<String>>;
     fn fetch(&self, remote: &str) -> anyhow::Result<()>;
+    fn auto_fetch_interval(&self) -> anyhow::Result<Option<std::time::Duration>>;
+    fn fetch_background(&self, cancel: &std::sync::atomic::AtomicBool) -> anyhow::Result<usize>;
+    fn remote_branch_tip(&self, remote: &str, branch: &str) -> anyhow::Result<Option<String>>;
+    fn push_with_lease(
+        &self,
+        remote: &str,
+        branch: &str,
+        expected: Option<&str>,
+    ) -> anyhow::Result<()>;
+    fn prepare_autosquash(
+        &self,
+        target: &str,
+        create_fixup: bool,
+    ) -> anyhow::Result<AutosquashPlan>;
+    fn execute_autosquash(&self, plan: &AutosquashPlan) -> anyhow::Result<RebaseOutcome>;
+    fn conflict_checkpoint(&self, path: &GitPath) -> anyhow::Result<ConflictCheckpoint>;
+    fn restore_conflict_checkpoint(
+        &self,
+        before: &ConflictCheckpoint,
+        expected: &ConflictCheckpoint,
+    ) -> anyhow::Result<()>;
+
     fn push(&self, remote: &str, branch: &str, mode: usize) -> anyhow::Result<()>;
     fn push_tag(&self, remote: &str, tag: &str, mode: usize) -> anyhow::Result<()>;
 }
@@ -134,6 +156,8 @@ pub enum ConflictSide {
     Base,
     Ours,
     Theirs,
+    OursThenTheirs,
+    TheirsThenOurs,
 }
 
 /// A deletion is distinct from an empty file and from no pending resolution.
@@ -261,4 +285,29 @@ pub enum RebaseTodoAction {
 /// Open a repository, discovering it by walking up from `path` (like `git`).
 pub fn open(path: &Path) -> anyhow::Result<Box<dyn GitBackend>> {
     Ok(Box::new(gix::GixBackend::open(path)?))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutosquashPlan {
+    pub branch: String,
+    pub target: String,
+    pub subject: String,
+    pub head: String,
+    pub index_tree: String,
+    pub upstream: Option<String>,
+    pub create_fixup: bool,
+    pub commits: usize,
+    pub staged_files: usize,
+    pub published: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictCheckpoint {
+    pub context: Vec<u8>,
+    pub path: GitPath,
+    pub head: String,
+    pub index: Vec<u8>,
+    pub working: Option<Vec<u8>>,
+    pub symlink: bool,
+    pub mode: u32,
 }

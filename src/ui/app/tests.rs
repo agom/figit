@@ -190,11 +190,13 @@ fn shortcut_test_app() -> App {
         synthetic_graph(),
         vec![
             StatusEntry {
+                original_path: None,
                 path: "work.txt".into(),
                 index: ' ',
                 worktree: 'M',
             },
             StatusEntry {
+                original_path: None,
                 path: "index.txt".into(),
                 index: 'M',
                 worktree: ' ',
@@ -800,6 +802,7 @@ fn status_rows_keep_line_totals_visible_in_narrow_columns() {
     let status = paths
         .iter()
         .map(|path| StatusEntry {
+            original_path: None,
             path: (*path).to_string().into(),
             index: ' ',
             worktree: 'M',
@@ -875,6 +878,7 @@ fn devicon_colors_parse_hex() {
 #[test]
 fn status_rows_show_file_type_icons() {
     let status = vec![StatusEntry {
+        original_path: None,
         path: "src/main.rs".to_string().into(),
         index: ' ',
         worktree: 'M',
@@ -888,6 +892,7 @@ fn status_rows_show_file_type_icons() {
     );
 
     let status = vec![StatusEntry {
+        original_path: None,
         path: "NOTES".to_string().into(),
         index: ' ',
         worktree: 'M',
@@ -1229,6 +1234,7 @@ fn reword_and_edit_explain_when_graph_is_not_focused() {
     let mut app = App::new(
         synthetic_graph(),
         vec![StatusEntry {
+            original_path: None,
             path: "file".into(),
             index: ' ',
             worktree: 'M',
@@ -2026,6 +2032,7 @@ fn selected_conflict_diff_uses_blue_and_yellow_commit_colors() {
     let mut app = App::new(
         synthetic_graph(),
         vec![StatusEntry {
+            original_path: None,
             path: "file.txt".into(),
             index: 'U',
             worktree: 'U',
@@ -2101,6 +2108,7 @@ fn large_resolver_app(count: usize) -> App {
     let mut app = App::new(
         GraphModel::default(),
         vec![StatusEntry {
+            original_path: None,
             path: "large.rs".into(),
             index: 'U',
             worktree: 'U',
@@ -2293,7 +2301,7 @@ fn resolver_compact_layout_keeps_controls_and_more_result_context_visible() {
     let screen = render_full_app(&mut app, 80, 24);
     assert!(app.staging_area.height <= 6);
     assert!(app.three_way_view.as_ref().unwrap().viewport_height >= 5);
-    assert!(screen.contains("restore whole file"));
+    assert!(screen.contains("1 ours") && screen.contains("2 theirs"));
     app.graph_visible = false;
     render_full_app(&mut app, 80, 24);
     assert_eq!(app.staging_area.height, 3);
@@ -2332,11 +2340,13 @@ fn graph_hidden_layout_keeps_a_full_width_diff_and_stable_boundary() {
         synthetic_graph(),
         vec![
             StatusEntry {
+                original_path: None,
                 path: "a.txt".into(),
                 index: ' ',
                 worktree: 'M',
             },
             StatusEntry {
+                original_path: None,
                 path: "b.txt".into(),
                 index: 'M',
                 worktree: ' ',
@@ -2371,11 +2381,13 @@ fn hidden_graph_tab_order_follows_the_lists_then_diff_and_skips_empty_lists() {
         synthetic_graph(),
         vec![
             StatusEntry {
+                original_path: None,
                 path: "a.txt".into(),
                 index: ' ',
                 worktree: 'M',
             },
             StatusEntry {
+                original_path: None,
                 path: "b.txt".into(),
                 index: 'M',
                 worktree: ' ',
@@ -2420,6 +2432,7 @@ fn maximizing_and_graph_toggles_preserve_diff_state() {
     let mut app = App::new(
         synthetic_graph(),
         vec![StatusEntry {
+            original_path: None,
             path: "a.txt".into(),
             index: ' ',
             worktree: 'M',
@@ -2465,6 +2478,7 @@ fn file_rows_hide_unknown_diff_totals() {
     let mut app = App::new(
         synthetic_graph(),
         vec![StatusEntry {
+            original_path: None,
             path: "changed.txt".into(),
             index: ' ',
             worktree: 'M',
@@ -2487,6 +2501,7 @@ fn conflicts_do_not_enable_commit_actions() {
     let mut app = App::new(
         synthetic_graph(),
         vec![StatusEntry {
+            original_path: None,
             path: "a.txt".into(),
             index: 'U',
             worktree: 'U',
@@ -2498,6 +2513,7 @@ fn conflicts_do_not_enable_commit_actions() {
         "an unresolved conflict is not a staged change"
     );
     app.local_status = vec![StatusEntry {
+        original_path: None,
         path: "a.txt".into(),
         index: 'M',
         worktree: ' ',
@@ -2510,6 +2526,7 @@ fn conflicted_files_advertise_conflict_keys_instead_of_staging() {
     let mut app = App::new(
         synthetic_graph(),
         vec![StatusEntry {
+            original_path: None,
             path: "a.txt".into(),
             index: 'U',
             worktree: 'U',
@@ -2522,7 +2539,7 @@ fn conflicted_files_advertise_conflict_keys_instead_of_staging() {
     app.refresh_status_indices();
     let screen = render_full_app(&mut app, 120, 40);
     assert!(
-        screen.contains("o/t preview side"),
+        screen.contains("1/2 preview side"),
         "conflict keys expected:\n{screen}"
     );
     assert!(
@@ -2777,6 +2794,7 @@ fn fixup_waits_for_a_new_graph_selection() {
     let mut app = App::new(
         synthetic_graph(),
         vec![StatusEntry {
+            original_path: None,
             path: "file".into(),
             index: 'M',
             worktree: ' ',
@@ -2908,6 +2926,7 @@ fn bench_secondary_paths() {
     for n in [500usize, 2_000, 5_000] {
         let status: Vec<StatusEntry> = (0..n)
             .map(|i| StatusEntry {
+                original_path: None,
                 path: GitPath::from(format!("src/module/file_{i}.rs")),
                 index: ' ',
                 worktree: 'M',
@@ -3189,6 +3208,7 @@ fn clicks_use_the_rendered_file_list_offset_and_ignore_borders_and_blank_rows() 
     for (historical, staged) in [(false, false), (false, true), (true, false)] {
         let entries = (0..30)
             .map(|i| StatusEntry {
+                original_path: None,
                 path: format!("file-{i:02}.txt").into(),
                 index: if staged || historical { 'M' } else { ' ' },
                 worktree: if staged || historical { ' ' } else { 'M' },
@@ -3271,6 +3291,7 @@ fn modal_wheel_input_cannot_scroll_or_refocus_background_panels() {
 #[test]
 fn escape_cancels_fixup_and_restores_normal_enter_behavior() {
     let status = vec![StatusEntry {
+        original_path: None,
         path: "file.txt".into(),
         index: 'M',
         worktree: ' ',
@@ -3592,4 +3613,177 @@ fn three_way_rows(versions: &crate::backend::ConflictVersions) -> Vec<ThreeWayRo
     conflict::ConflictSources::new(versions).rows_for_result(&String::from_utf8_lossy(
         versions.working.as_deref().unwrap_or_default(),
     ))
+}
+
+#[test]
+fn renamed_file_list_displays_both_paths_on_the_correct_side() {
+    let mut app = App::new(
+        synthetic_graph(),
+        vec![StatusEntry {
+            path: GitPath::from("new.txt"),
+            original_path: Some(GitPath::from("old.txt")),
+            index: 'R',
+            worktree: 'M',
+        }],
+        None,
+    );
+    assert!(app
+        .file_status_line(0, true, 80)
+        .to_string()
+        .contains("old.txt → new.txt"));
+    assert!(!app
+        .file_status_line(0, false, 80)
+        .to_string()
+        .contains("old.txt"));
+    app.historical_commit = Some("commit".into());
+    assert!(app
+        .file_status_line(0, false, 80)
+        .to_string()
+        .contains("old.txt → new.txt"));
+}
+
+#[test]
+fn rename_only_diff_is_metadata_without_fake_line_numbers_or_hunks() {
+    let lines = parse_diff(
+        "diff --git a/old b/new\nsimilarity index 100%\nrename from old\nrename to new\n",
+    );
+    assert_eq!(lines.len(), 3);
+    assert!(lines
+        .iter()
+        .all(|line| line.kind == DiffKind::Meta && line.old_no.is_none() && line.new_no.is_none()));
+    assert!(diff_hunk_headers(&lines).is_empty());
+}
+
+#[test]
+fn combined_conflict_choices_preserve_order_and_leave_other_hunks_untouched() {
+    let text = "before\n<<<<<<< ours\nleft\n||||||| base\nbase\n=======\nright\n>>>>>>> theirs\nbetween\n<<<<<<< ours\nsecond left\n=======\nsecond right\n>>>>>>> theirs\nafter\n";
+    for (choice, expected) in [
+        (ConflictSide::OursThenTheirs, "left\nright\n"),
+        (ConflictSide::TheirsThenOurs, "right\nleft\n"),
+    ] {
+        let result = replace_conflict_hunk(text, 0, choice).unwrap();
+        assert!(result.starts_with(&format!("before\n{expected}between\n")));
+        assert_eq!(conflict_hunks(&result).len(), 1);
+        assert!(result.ends_with("second right\n>>>>>>> theirs\nafter\n"));
+    }
+}
+
+#[test]
+fn numbered_conflict_choices_preview_apply_and_undo_the_staged_result() {
+    for (key, expected) in [('3', "ours\ntheirs\n"), ('4', "theirs\nours\n")] {
+        let (repo, mut app) = review_app("conflict");
+        app.focus = Focus::Diff;
+        let original = std::fs::read(repo.path().join("file.txt")).unwrap();
+        app.handle_key(KeyEvent::from(KeyCode::Char(key)));
+        assert!(app.three_way_view.as_ref().unwrap().result_preview);
+        assert_eq!(
+            std::fs::read(repo.path().join("file.txt")).unwrap(),
+            original
+        );
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("file.txt")).unwrap(),
+            expected
+        );
+        assert!(review_git(repo.path(), &["ls-files", "-u"]).is_empty());
+        app.handle_key(KeyEvent::from(KeyCode::Char('u')));
+        let limit = Instant::now() + Duration::from_secs(5);
+        while app.local_job.is_some() && Instant::now() < limit {
+            app.poll_local_job();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(app.local_job.is_none());
+        assert!(app.error_popup.is_none(), "{:?}", app.error_popup);
+        assert_eq!(
+            std::fs::read(repo.path().join("file.txt")).unwrap(),
+            original
+        );
+        assert!(!review_git(repo.path(), &["ls-files", "-u"]).is_empty());
+        assert!(app.three_way_view.is_some());
+    }
+}
+
+#[test]
+fn base_view_is_read_only_and_separate_from_restore_base() {
+    let (repo, mut app) = review_app("conflict");
+    app.focus = Focus::Diff;
+    let before = std::fs::read(repo.path().join("file.txt")).unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert!(app.three_way_view.as_ref().unwrap().show_base);
+    assert!(!app.three_way_view.as_ref().unwrap().result_preview);
+    assert!(render_full_app(&mut app, 120, 40).contains("Base"));
+    assert_eq!(std::fs::read(repo.path().join("file.txt")).unwrap(), before);
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert!(!app.three_way_view.as_ref().unwrap().show_base);
+    app.handle_key(KeyEvent::from(KeyCode::Char('B')));
+    assert_eq!(
+        app.three_way_view.as_ref().unwrap().chosen_side,
+        Some(ConflictSide::Base)
+    );
+    assert_eq!(std::fs::read(repo.path().join("file.txt")).unwrap(), before);
+}
+
+#[test]
+fn auto_fetch_completions_preserve_focus_and_keep_errors_out_of_modals() {
+    for failure in [false, true] {
+        let mut app = App::new(synthetic_graph(), vec![], None);
+        app.focus = Focus::Diff;
+        app.selected_graph = 2;
+        app.scroll_y = 1;
+        let (tx, rx) = mpsc::channel();
+        app.auto_fetch.worker = Some(rx);
+        tx.send(auto_fetch::AutoFetchCompletion {
+            interval: Some(Duration::from_secs(120)),
+            result: if failure {
+                Err("offline".into())
+            } else {
+                Ok(1)
+            },
+        })
+        .unwrap();
+        app.poll_auto_fetch();
+        assert_eq!(app.focus, Focus::Diff);
+        assert_eq!(app.selected_graph, 2);
+        assert_eq!(app.scroll_y, 1);
+        assert!(app.error_popup.is_none());
+        assert!(app.refresh.preserve_scroll);
+        assert!(app.auto_fetch.deadline.is_some());
+        assert_eq!(app.auto_fetch.last_error.is_some(), failure);
+        assert_eq!(app.auto_fetch.last_success.is_some(), !failure);
+    }
+}
+
+#[test]
+fn auto_fetch_defers_during_editing_or_rebase() {
+    let mut app = App::new(synthetic_graph(), vec![], None);
+    app.repository_path = Some(std::env::temp_dir().join("unused-auto-fetch-test"));
+    app.auto_fetch.deadline = Some(Instant::now());
+    app.commit_dialog.set_open(true);
+    app.poll_auto_fetch();
+    assert!(app.auto_fetch.worker.is_none());
+    app.commit_dialog.set_open(false);
+    app.rebase_active = true;
+    app.poll_auto_fetch();
+    assert!(app.auto_fetch.worker.is_none());
+}
+
+#[test]
+fn compound_history_commands_are_contextual_and_need_no_shortcut() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Graph;
+    app.selected_graph = 2;
+    let entries = app.panel_commands();
+    let command = entries
+        .iter()
+        .find(|command| command.id == CommandId::FixupAutosquash)
+        .unwrap();
+    assert!(command.key.is_empty());
+    assert!(entries
+        .iter()
+        .any(|command| command.id == CommandId::Autosquash && command.key.is_empty()));
+    app.focus = Focus::Status;
+    assert!(!app
+        .panel_commands()
+        .iter()
+        .any(|command| command.id == CommandId::FixupAutosquash));
 }

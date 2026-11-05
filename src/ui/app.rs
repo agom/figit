@@ -1,5 +1,6 @@
 //! Shared application state and constructors; feature handlers live in submodules.
 
+mod auto_fetch;
 mod commands;
 mod commit;
 mod conflict;
@@ -210,6 +211,13 @@ pub struct App {
     remote_operation: Option<RemoteOperation>,
     remote_started: Option<Instant>,
     remote_notice: Option<(String, Instant)>,
+    auto_fetch: auto_fetch::AutoFetchState,
+    git_gate: std::sync::Arc<std::sync::Mutex<()>>,
+    conflict_undo: Vec<(
+        crate::backend::ConflictCheckpoint,
+        crate::backend::ConflictCheckpoint,
+    )>,
+    push_expected: Option<String>,
     update_tx: Sender<UpdateEvent>,
     update_rx: Receiver<UpdateEvent>,
     update_status: UpdateStatus,
@@ -405,6 +413,10 @@ impl App {
             remote_operation: None,
             remote_started: None,
             remote_notice: None,
+            auto_fetch: auto_fetch::AutoFetchState::default(),
+            git_gate: Default::default(),
+            conflict_undo: Vec::new(),
+            push_expected: None,
             update_tx,
             update_rx,
             update_status: UpdateStatus::Idle,

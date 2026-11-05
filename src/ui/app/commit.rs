@@ -55,6 +55,10 @@ impl CommitDialog {
 impl App {
     pub(super) fn commit_changes(&mut self) {
         match self.commit_dialog.mode.clone() {
+            CommitMode::Autosquash(plan) => {
+                self.start_rebase_job(move |backend| backend.execute_autosquash(&plan));
+                return;
+            }
             CommitMode::Reword(target) => {
                 if self.commit_dialog.title.trim().is_empty() {
                     return;
@@ -102,7 +106,8 @@ impl App {
             CommitMode::Reword(_)
             | CommitMode::PlanReword(_)
             | CommitMode::Edit(_)
-            | CommitMode::RebaseReplacement => {
+            | CommitMode::RebaseReplacement
+            | CommitMode::Autosquash(_) => {
                 unreachable!("rebase actions are handled above")
             }
         };
@@ -213,6 +218,7 @@ pub(super) enum CommitMode {
     Normal,
     Amend,
     Fixup(String),
+    Autosquash(crate::backend::AutosquashPlan),
     Reword(String),
     Edit(String),
     RebaseReplacement,
@@ -233,5 +239,27 @@ impl App {
                 .local_status
                 .iter()
                 .any(|entry| !entry.is_conflict() && entry.index != ' ' && entry.index != '?')
+    }
+}
+
+impl App {
+    pub(super) fn open_autosquash(&mut self, create_fixup: bool) {
+        let Some(target) = self.selected_commit_id() else {
+            return;
+        };
+        self.start_local_job(
+            "Prepare autosquash",
+            move |backend| backend.prepare_autosquash(&target, create_fixup),
+            |app, result| match result.result {
+                Ok(plan) => {
+                    app.commit_dialog.mode = CommitMode::Autosquash(plan);
+                    app.commit_dialog.set_open(true);
+                    app.commit_dialog.set_confirming(true);
+                    app.commit_field = CommitField::Commit;
+                    app.focus = Focus::Commit;
+                }
+                Err(error) => app.show_rebase_error(error),
+            },
+        );
     }
 }

@@ -603,17 +603,39 @@ impl App {
             KeyCode::Char('R') if self.focus == Focus::Graph => {
                 self.execute_panel_command(CommandId::Graph(GraphAction::RebaseOnto))
             }
-            KeyCode::Char('o')
+            KeyCode::Char('1' | 'o')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
                 self.execute_panel_command(CommandId::Conflict(ConflictSide::Ours));
             }
-            KeyCode::Char('t')
+            KeyCode::Char('2' | 't')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
                 self.execute_panel_command(CommandId::Conflict(ConflictSide::Theirs));
             }
+            KeyCode::Char('3' | '4')
+                if self.selected_conflict_path().is_some() && self.modal_closed() =>
+            {
+                let side = if key.code == KeyCode::Char('3') {
+                    ConflictSide::OursThenTheirs
+                } else {
+                    ConflictSide::TheirsThenOurs
+                };
+                self.execute_panel_command(CommandId::Conflict(side));
+            }
+            KeyCode::Char('u')
+                if matches!(self.focus, Focus::Status | Focus::Diff)
+                    && !self.conflict_undo.is_empty()
+                    && self.modal_closed() =>
+            {
+                self.execute_panel_command(CommandId::UndoConflict);
+            }
             KeyCode::Char('b')
+                if self.selected_conflict_path().is_some() && self.modal_closed() =>
+            {
+                self.execute_panel_command(CommandId::ToggleConflictBase);
+            }
+            KeyCode::Char('B')
                 if self.selected_conflict_path().is_some() && self.modal_closed() =>
             {
                 self.execute_panel_command(CommandId::Conflict(ConflictSide::Base));
