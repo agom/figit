@@ -3305,6 +3305,7 @@ fn generate_screenshot_set(light: bool) {
         )
     };
     let capture = |tui: &Tui, path: &str| {
+        tui.wait_until_hidden("Loading");
         let screen = tui.screen.lock().expect("screen lock");
         let path = if light {
             path.replace(".png", "-light.png")
@@ -3325,6 +3326,8 @@ fn generate_screenshot_set(light: bool) {
         .unwrap()
         .success());
     let mut tui = launch(&dest);
+    tui.wait_for("+first changed");
+    tui.wait_for("2/2 hunks");
     capture(&tui, "assets/screenshot.png");
     tui.send(b"\t");
     tui.send(b"\x1b[B\x1b[B\x1b[B\x1b[B");
