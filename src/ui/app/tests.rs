@@ -3171,7 +3171,10 @@ fn content_refresh_updates_diff_and_preserves_then_clamps_viewport() {
         .any(|line| line.text.contains("new content 40")));
     assert_eq!(app.diff_scroll, 20);
     assert_eq!(app.selected_status, selected);
-    assert!(app.diff_stats_generation > old_stats_generation);
+    assert!(
+        app.diff_stats_generation > old_stats_generation || app.diff_stats_pending,
+        "content refresh must start or queue a counter update"
+    );
     std::fs::write(directory.path().join("file.txt"), "short\n").unwrap();
     app.reload_external_snapshot(load_repository_snapshot(directory.path()).unwrap());
     assert_eq!(app.diff_scroll, 0);
@@ -3786,4 +3789,316 @@ fn compound_history_commands_are_contextual_and_need_no_shortcut() {
         .panel_commands()
         .iter()
         .any(|command| command.id == CommandId::FixupAutosquash));
+}
+
+#[test]
+fn pull_dialog_lists_one_time_strategies_and_cancels_without_running_git() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Graph;
+    app.selected_graph = 1;
+    app.open_graph_action(GraphAction::Pull);
+    assert_eq!(app.pull_focus, 0);
+    let rendered = render_full_app(&mut app, 120, 40);
+    for label in [
+        "Configured",
+        "Fast-forward only",
+        "Rebase",
+        "Merge",
+        "Git settings are unchanged",
+    ] {
+        assert!(rendered.contains(label), "{rendered}");
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.pull_focus, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.pull_focus, 2);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.pull_focus, 1);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.pull_focus, 4);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.graph_action.is_none());
+    assert!(!app.git_busy());
+    assert_eq!(app.focus, Focus::Graph);
+}
+
+#[test]
+fn branch_reset_warning_fits_a_standard_terminal() {
+    let mut app = shortcut_test_app();
+    app.branch_update = Some(BranchUpdate {
+        branch: "main".into(),
+        old_tip: "123".into(),
+        upstream: "origin/main".into(),
+        remote: "origin".into(),
+        source: "refs/heads/main".into(),
+        head_ref: Some("refs/heads/main".into()),
+    });
+    app.graph_action = Some(GraphAction::ResetBranchRemote);
+    app.commit_field = CommitField::Cancel;
+    app.focus = Focus::Commit;
+    let rendered = render_full_app(&mut app, 80, 24);
+    assert!(
+        rendered.contains("Staged and unstaged changes will be discarded"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("may also be removed"), "{rendered}");
+    assert!(rendered.contains("Cancel"), "{rendered}");
+}
+
+#[test]
+fn wheel_navigates_both_file_sections_and_changes_without_crossing_boundaries() {
+    for historical in [false, true] {
+        let entries = (0..80)
+            .map(|i| StatusEntry {
+                original_path: None,
+                path: format!("wheel-{i:03}.txt").into(),
+                index: if historical || i >= 40 { 'M' } else { ' ' },
+                worktree: if !historical && i < 40 { 'M' } else { ' ' },
+            })
+            .collect();
+        let mut app = App::new(synthetic_graph(), entries, None);
+        if historical {
+            app.historical_commit = Some("m".into());
+        }
+        render_full_app(&mut app, 120, 40);
+        let pane = if historical {
+            app.staging_area
+        } else {
+            app.staging_panes(app.staging_area)[0]
+        };
+        app.focus = Focus::Graph;
+        app.handle_mouse_scroll(pane.x + 2, pane.y + 2, 4);
+        assert_eq!(app.selected_status, 12);
+        assert_eq!(app.focus, Focus::Status);
+        app.handle_mouse_scroll(pane.x + 2, pane.y + 2, -2);
+        assert_eq!(app.selected_status, 6);
+        app.handle_mouse_scroll(pane.x + 2, pane.y + 2, 100);
+        assert_eq!(app.selected_status, if historical { 79 } else { 39 });
+        if !historical {
+            let pane = app.staging_panes(app.staging_area)[1];
+            app.handle_mouse_scroll(pane.x + 2, pane.y + 2, 2);
+            assert_eq!(app.status_section, StatusSection::Staged);
+            assert_eq!(app.selected_status, 46);
+            app.handle_mouse_scroll(pane.x + 2, pane.y + 2, -100);
+            assert_eq!(app.selected_status, 40);
+        }
+    }
+}
+
+#[test]
+fn wheel_scrolls_hovered_graph_without_keyboard_focus_and_preserves_delta() {
+    let mut app = App::new(synthetic_graph(), vec![], None);
+    app.graph_area = Rect::new(0, 0, 40, 10);
+    app.diff_area = Rect::new(40, 0, 40, 10);
+    app.details_area = Rect::new(0, 10, 40, 10);
+    app.focus = Focus::Status;
+    app.handle_mouse_scroll(2, 2, 3);
+    assert_eq!(app.scroll_y, 9);
+    assert_eq!(app.focus, Focus::Status);
+    app.handle_mouse_scroll(42, 2, 5);
+    assert_eq!(app.diff_scroll, 5);
+    app.historical_commit = Some("m".into());
+    app.handle_mouse_scroll(2, 12, 4);
+    assert_eq!(app.details_scroll, 4);
+    assert_eq!(app.focus, Focus::Details);
+}
+
+#[test]
+fn diff_worker_keeps_only_latest_pending_selection_and_ignores_stale_results() {
+    let entries = (0..300)
+        .map(|i| StatusEntry {
+            original_path: None,
+            path: format!("file-{i:03}.txt").into(),
+            index: ' ',
+            worktree: 'M',
+        })
+        .collect();
+    let mut app = App::new(synthetic_graph(), entries, None);
+    app.repository_path = Some(PathBuf::from("/unused-test-repository"));
+    let (started, start_rx) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let (loaded, loaded_rx) = mpsc::channel();
+    app.diff_loader = Some(diff_loader::DiffLoader::with_reader(move |request| {
+        started.send(request.entry.path.clone()).unwrap();
+        release_rx.recv().unwrap();
+        loaded.send(request.entry.path.clone()).unwrap();
+        Ok((
+            format!("@@ -1 +1 @@\n-old\n+{}\n", request.entry.path.display()),
+            1,
+        ))
+    }));
+    app.selected_status = 0;
+    app.refresh_diff();
+    assert_eq!(
+        start_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        GitPath::from("file-000.txt")
+    );
+    app.execute_panel_command(CommandId::HunkMode);
+    assert!(
+        app.hunk_mode,
+        "mode changes should survive a slow diff read"
+    );
+    assert!(!app
+        .panel_commands()
+        .iter()
+        .any(|command| command.id == CommandId::ApplySelection));
+    // Navigation remains available even though the worker is deliberately blocked.
+    for _ in 0..299 {
+        app.move_status_selection(1, false);
+    }
+    assert_eq!(app.selected_status, 299);
+    assert!(app.diff_loading);
+    assert!(app.diff_lines.is_empty());
+    release.send(()).unwrap();
+    assert_eq!(
+        loaded_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        GitPath::from("file-000.txt")
+    );
+    assert_eq!(
+        start_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        GitPath::from("file-299.txt")
+    );
+    // Arrival of the second request guarantees the first result was published.
+    app.poll_diff_load();
+    assert!(app.diff_loading);
+    assert!(
+        app.diff_lines.is_empty(),
+        "stale results must not appear under the new filename"
+    );
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.diff_loading && Instant::now() < deadline {
+        app.poll_diff_load();
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!app.diff_loading);
+    assert!(app
+        .diff_lines
+        .iter()
+        .any(|line| line.text.contains("file-299.txt")));
+    assert!(
+        start_rx.try_recv().is_err(),
+        "intermediate selections must not spawn reads"
+    );
+    app.diff_area = Rect::new(0, 0, 120, 10);
+    app.diff_scroll = 100;
+    app.diff_scroll_x = 100;
+    app.refresh_diff();
+    assert!(app.diff_loading);
+    assert!(
+        app.diff_lines
+            .iter()
+            .any(|line| line.text.contains("file-299.txt")),
+        "refreshing the same file must not blank its diff"
+    );
+    assert!(
+        !app.panel_commands()
+            .iter()
+            .any(|command| command.id == CommandId::ApplySelection),
+        "partial changes must wait for the refreshed diff"
+    );
+    start_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.diff_loading && Instant::now() < deadline {
+        app.poll_diff_load();
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!app.diff_loading);
+    assert_eq!((app.diff_scroll, app.diff_scroll_x), (0, 0));
+}
+
+#[test]
+fn staging_counters_stay_visible_and_refresh_requests_are_coalesced() {
+    let mut app = App::new(
+        synthetic_graph(),
+        vec![StatusEntry {
+            original_path: None,
+            path: "file.txt".into(),
+            index: 'M',
+            worktree: 'M',
+        }],
+        None,
+    );
+    let path = GitPath::from("file.txt");
+    app.diff_stats.insert((path.clone(), false), (2, 1));
+    app.diff_hunk_counts.insert(path.clone(), (1, 2));
+    app.repository_path = Some(PathBuf::from("/unused-test-repository"));
+    app.diff_stats_in_progress = true;
+    app.diff_stats_generation = 42;
+    for _ in 0..20 {
+        app.refresh_diff_stats();
+    }
+    assert_eq!(app.diff_stats.get(&(path.clone(), false)), Some(&(2, 1)));
+    assert_eq!(app.diff_hunk_counts.get(&path), Some(&(1, 2)));
+    assert!(app.diff_stats_pending);
+    assert_eq!(
+        app.diff_stats_generation, 42,
+        "refreshes must not launch overlapping workers"
+    );
+    app.repository_path = None;
+    app.diff_stats_tx
+        .send(DiffStatsCompletion {
+            generation: 42,
+            context: None,
+            result: Ok(refresh::DiffStatsSnapshot {
+                stats: vec![PathDiffStats {
+                    path: path.clone(),
+                    staged: false,
+                    added: 4,
+                    removed: 3,
+                }],
+                hunks: vec![(path.clone(), (1, 3))],
+            }),
+        })
+        .unwrap();
+    app.poll_diff_stats();
+    assert_eq!(app.diff_stats.get(&(path.clone(), false)), Some(&(4, 3)));
+    assert_eq!(app.diff_hunk_counts.get(&path), Some(&(1, 3)));
+    assert!(!app.diff_stats_in_progress);
+    assert!(!app.diff_stats_pending);
+    app.status.clear();
+    app.refresh_diff_stats();
+    assert!(app.diff_stats.is_empty());
+    assert!(app.diff_hunk_counts.is_empty());
+}
+
+#[test]
+fn counters_from_an_old_commit_context_cannot_replace_worktree_counters() {
+    let mut app = App::new(
+        synthetic_graph(),
+        vec![StatusEntry {
+            original_path: None,
+            path: "file.txt".into(),
+            index: ' ',
+            worktree: 'M',
+        }],
+        None,
+    );
+    let path = GitPath::from("file.txt");
+    app.diff_stats.insert((path.clone(), false), (2, 1));
+    app.diff_stats_tx
+        .send(DiffStatsCompletion {
+            generation: app.diff_stats_generation,
+            context: Some("old-commit".into()),
+            result: Ok(refresh::DiffStatsSnapshot {
+                stats: vec![PathDiffStats {
+                    path: path.clone(),
+                    staged: false,
+                    added: 99,
+                    removed: 99,
+                }],
+                hunks: vec![],
+            }),
+        })
+        .unwrap();
+    app.poll_diff_stats();
+    assert_eq!(app.diff_stats.get(&(path.clone(), false)), Some(&(2, 1)));
+    app.historical_commit = Some("new-commit".into());
+    app.refresh_diff_stats();
+    assert!(
+        app.diff_stats.is_empty(),
+        "different commit contexts must not reuse counters"
+    );
 }

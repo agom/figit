@@ -70,6 +70,10 @@ impl App {
 
     pub(super) fn open_graph_action(&mut self, action: GraphAction) {
         self.pending_fixup = false;
+        if action == GraphAction::Pull && !self.selected_current_branch() {
+            self.show_git_error("Select the checked-out branch before pulling. Use Update branch from upstream for another local branch.".into());
+            return;
+        }
         if self.selected_commit_id().is_none() {
             self.show_git_error("Select a commit row before running this action".into());
             return;
@@ -84,6 +88,12 @@ impl App {
         self.remote_action = false;
         self.push_mode = 0;
         self.push_focus = 0;
+        self.pull_focus = 0;
+        self.pull_branch = if action == GraphAction::Pull {
+            self.graph.head_name.clone()
+        } else {
+            None
+        };
         self.push_after_create = false;
         self.commit_field = match action {
             GraphAction::Branch | GraphAction::Tag | GraphAction::Rename => CommitField::Title,
@@ -155,6 +165,12 @@ impl App {
             } else {
                 (self.reset_focus + 3) % 4
             };
+        } else if action == GraphAction::Pull {
+            self.pull_focus = if forward {
+                (self.pull_focus + 1) % 5
+            } else {
+                (self.pull_focus + 4) % 5
+            };
         } else if action == GraphAction::Push {
             self.push_focus = if forward {
                 (self.push_focus + 1) % 4
@@ -185,6 +201,13 @@ impl App {
         let Some(action) = self.graph_action else {
             return;
         };
+        if matches!(
+            action,
+            GraphAction::UpdateBranch | GraphAction::ResetBranchRemote
+        ) {
+            self.run_branch_update(action == GraphAction::ResetBranchRemote);
+            return;
+        }
         if matches!(action, GraphAction::Fetch | GraphAction::PushRemote) {
             if let Some(remote) = self.remote_choices.get(self.remote_selection).cloned() {
                 self.remote_choices.clear();
@@ -199,7 +222,18 @@ impl App {
         }
         let remote_operation =
             match action {
-                GraphAction::Pull => Some(RemoteOperation::Pull),
+                GraphAction::Pull => self
+                    .pull_branch
+                    .clone()
+                    .map(|branch| RemoteOperation::Pull {
+                        branch,
+                        strategy: [
+                            PullStrategy::Configured,
+                            PullStrategy::FastForward,
+                            PullStrategy::Rebase,
+                            PullStrategy::Merge,
+                        ][self.pull_focus.min(3)],
+                    }),
                 GraphAction::Push => self.push_remote.clone().zip(self.push_target.clone()).map(
                     |(remote, target)| RemoteOperation::Push {
                         mode: self.push_mode,
@@ -287,7 +321,9 @@ impl App {
                     Some(DeleteTarget::Tag(name)) => backend.delete_tag(name, remote_action),
                     None => Err(anyhow::anyhow!("no ref selected to delete")),
                 },
-                GraphAction::Pull => backend.pull(),
+                GraphAction::Pull | GraphAction::UpdateBranch | GraphAction::ResetBranchRemote => {
+                    unreachable!("branch remote operations are dispatched before local actions")
+                }
                 GraphAction::Fetch | GraphAction::PushRemote | GraphAction::Push => {
                     unreachable!("remote operation is dispatched to the background worker")
                 }
@@ -389,6 +425,12 @@ impl App {
         let scroll = self.diff_scroll;
         let horizontal = self.diff_scroll_x;
         self.refresh_diff();
+        if self.diff_loading {
+            self.diff_scroll = scroll;
+            self.diff_scroll_x = horizontal;
+            self.refresh_diff_stats();
+            return;
+        }
         self.ensure_diff_layout();
         let rows = self.diff_cache.as_ref().map_or(0, |(_, rows)| rows.len());
         let viewport = self.diff_area.height.saturating_sub(2) as usize;
@@ -775,7 +817,7 @@ impl App {
 
     /// The furthest the focused diff can be panned horizontally, based on its
     /// widest line and the current pane width.
-    fn diff_max_scroll_x(&self) -> u16 {
+    pub(super) fn diff_max_scroll_x(&self) -> u16 {
         let width = usize::from(self.diff_area.width.saturating_sub(
             if self.hunk_mode || self.line_mode {
                 4
@@ -864,7 +906,7 @@ impl App {
                 self.diff_mode = mode;
             }
         }
-        if !self.hunk_mode && self.hunk_header_indices.is_empty() {
+        if !self.hunk_mode && self.hunk_header_indices.is_empty() && !self.diff_loading {
             self.show_git_error("This file has no text hunks; use file mode to stage it.".into());
             return;
         }
@@ -898,6 +940,17 @@ impl App {
             if self.focus == Focus::Diff {
                 self.focus = Focus::Status;
             }
+            return;
+        }
+        if self.diff_loading {
+            self.diff_mode_before_line = Some(self.diff_mode);
+            self.diff_mode = DiffMode::Unified;
+            self.hunk_mode = false;
+            self.line_mode = true;
+            self.selected_diff_line = None;
+            self.diff_scroll = 0;
+            self.diff_cache = None;
+            self.focus = Focus::Diff;
             return;
         }
         let Some(selected) = self
@@ -965,6 +1018,9 @@ impl App {
     }
 
     pub(super) fn apply_selected_diff_hunk(&mut self) {
+        if self.diff_loading {
+            return;
+        }
         if self.historical_commit.is_some() || self.three_way_view.is_some() {
             return;
         }
@@ -1009,10 +1065,13 @@ impl App {
             self.selected_statuses.clear();
             self.selected_statuses.insert(index);
         }
-        self.refresh_diff();
+        self.refresh_diff_after_mutation();
     }
 
     pub(super) fn apply_selected_diff_line(&mut self) {
+        if self.diff_loading {
+            return;
+        }
         if !self.line_mode || self.historical_commit.is_some() || self.three_way_view.is_some() {
             return;
         }
@@ -1067,10 +1126,13 @@ impl App {
             self.selected_statuses.clear();
             self.selected_statuses.insert(index);
         }
-        self.refresh_diff();
+        self.refresh_diff_after_mutation();
     }
 
     pub(super) fn discard_selected_diff_change(&mut self) {
+        if self.diff_loading {
+            return;
+        }
         if self.historical_commit.is_some() || self.diff_target != DiffTarget::Worktree {
             return;
         }
@@ -1105,7 +1167,7 @@ impl App {
             return;
         }
         self.refresh_status();
-        self.refresh_diff();
+        self.refresh_diff_after_mutation();
     }
 
     pub(super) fn apply_selected_file_changes(&mut self) {
@@ -1253,6 +1315,8 @@ pub(super) enum GraphAction {
     Rename,
     Delete,
     Pull,
+    UpdateBranch,
+    ResetBranchRemote,
     Fetch,
     PushRemote,
     Push,
@@ -1273,6 +1337,8 @@ impl GraphAction {
             Self::Rename => "Rename branch",
             Self::Delete => "Delete ref",
             Self::Pull => "Pull",
+            Self::UpdateBranch => "Update branch from upstream",
+            Self::ResetBranchRemote => "Reset branch to upstream",
             Self::Fetch => "Fetch",
             Self::PushRemote | Self::Push => "Push",
             Self::Undo => "Undo",

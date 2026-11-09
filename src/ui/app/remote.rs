@@ -11,7 +11,10 @@ pub(super) enum PushTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RemoteOperation {
     Fetch(String),
-    Pull,
+    Pull {
+        branch: String,
+        strategy: PullStrategy,
+    },
     Push {
         mode: usize,
         remote: String,
@@ -24,7 +27,7 @@ impl RemoteOperation {
     pub(super) fn label(&self) -> &'static str {
         match self {
             Self::Fetch(_) => "Fetch",
-            Self::Pull => "Pull",
+            Self::Pull { .. } => "Pull",
             Self::Push { .. } => "Push",
         }
     }
@@ -37,6 +40,66 @@ pub(super) struct RemoteCompletion {
 }
 
 impl App {
+    pub(super) fn open_branch_update(&mut self, reset: bool) {
+        let Some(branch) = self.selected_local_branch() else {
+            self.show_git_error("Select a commit with a local branch first.".into());
+            return;
+        };
+        self.start_local_job(
+            "Prepare branch update",
+            move |backend| backend.prepare_branch_update(&branch),
+            move |app, completed| match completed.result {
+                Ok(plan) => {
+                    app.branch_update = Some(plan);
+                    app.graph_action = Some(if reset {
+                        GraphAction::ResetBranchRemote
+                    } else {
+                        GraphAction::UpdateBranch
+                    });
+                    app.graph_action_return_focus = Some(Focus::Graph);
+                    app.commit_field = if reset {
+                        CommitField::Cancel
+                    } else {
+                        CommitField::Commit
+                    };
+                    app.focus = Focus::Commit;
+                }
+                Err(error) => app.show_git_error(error),
+            },
+        );
+    }
+
+    pub(super) fn run_branch_update(&mut self, reset: bool) {
+        let Some(plan) = self.branch_update.take() else {
+            return;
+        };
+        self.graph_action = None;
+        self.focus = Focus::Graph;
+        let selection = GraphSelectionSnapshot {
+            commit_id: self.selected_commit_id(),
+            row: self.selected_graph,
+            had_local_row: !self.local_status.is_empty(),
+            selected_local_row: !self.local_status.is_empty() && self.selected_graph == 0,
+        };
+        self.start_local_job(
+            if reset {
+                "Reset branch to upstream"
+            } else {
+                "Update branch from upstream"
+            },
+            move |backend| backend.update_branch(&plan, reset),
+            move |app, completed| {
+                let error = completed.result.as_ref().err().cloned();
+                completed.refresh(app);
+                app.restore_graph_selection(selection);
+                app.focus = Focus::Graph;
+                if let Some(error) = error {
+                    app.show_git_error(error);
+                }
+            },
+        );
+    }
+
     pub(super) fn open_remote_action(&mut self, for_push: bool) {
         self.pending_fixup = false;
         let Some(backend) = self.backend.as_ref() else {
@@ -166,7 +229,9 @@ impl App {
                 let backend = crate::backend::open(&repository_path)?;
                 match &operation {
                     RemoteOperation::Fetch(remote) => backend.fetch(remote)?,
-                    RemoteOperation::Pull => backend.pull()?,
+                    RemoteOperation::Pull { branch, strategy } => {
+                        backend.pull(branch, *strategy)?
+                    }
                     RemoteOperation::Push {
                         mode,
                         remote,
@@ -220,6 +285,9 @@ impl App {
                         }
                         Err(error) => {
                             self.remote_notice = None;
+                            // A failed merge/rebase can still change the index and
+                            // start a conflict workflow. Refresh that state too.
+                            self.refresh.deadline = Some(Instant::now());
                             self.show_git_error(format!(
                                 "{} failed: {error}",
                                 completion.operation.label()

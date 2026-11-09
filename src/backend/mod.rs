@@ -4,10 +4,30 @@ use std::path::Path;
 
 use crate::core::model::{GitPath, GraphModel, StatusEntry};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullStrategy {
+    Configured,
+    FastForward,
+    Rebase,
+    Merge,
+}
+
+/// Local state approved before fetching; stale confirmations must not move a ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchUpdate {
+    pub branch: String,
+    pub old_tip: String,
+    pub upstream: String,
+    pub remote: String,
+    pub source: String,
+    pub head_ref: Option<String>,
+}
+
 /// Git operations used by the UI. Repository reads use `gix`; mutations are
 /// implemented behind this trait so UI workflows remain backend-independent.
 pub trait GitBackend {
     fn working_directory(&self) -> &Path;
+    fn index_fingerprint(&self) -> Option<(std::time::SystemTime, u64)>;
     fn watch_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>>;
     fn build_graph(&self) -> anyhow::Result<GraphModel>;
     /// All reachable commit ids in the repository's stable graph order.
@@ -18,6 +38,9 @@ pub trait GitBackend {
     fn graph_window(&self, skip: usize, limit: usize) -> anyhow::Result<GraphWindow>;
     fn status(&self) -> anyhow::Result<Vec<StatusEntry>>;
     fn diff(&self, path: &GitPath, target: DiffTarget) -> anyhow::Result<String>;
+    /// Use an already loaded status entry rather than rescanning the repository
+    /// to discover a possible rename source while navigating files.
+    fn diff_entry(&self, entry: &StatusEntry, target: DiffTarget) -> anyhow::Result<String>;
     fn diff_hunk_counts(&self, path: &GitPath) -> anyhow::Result<(usize, usize)>;
     /// Staged and worktree hunk counts for many paths at once. Batching keeps
     /// the refresh from spawning a handful of `git` processes per file.
@@ -98,7 +121,9 @@ pub trait GitBackend {
     fn rename_branch(&self, old: &str, new: &str, remote: bool) -> anyhow::Result<()>;
     fn delete_branch(&self, name: &str, remote: bool) -> anyhow::Result<()>;
     fn delete_tag(&self, name: &str, remote: bool) -> anyhow::Result<()>;
-    fn pull(&self) -> anyhow::Result<()>;
+    fn pull(&self, branch: &str, strategy: PullStrategy) -> anyhow::Result<()>;
+    fn prepare_branch_update(&self, branch: &str) -> anyhow::Result<BranchUpdate>;
+    fn update_branch(&self, plan: &BranchUpdate, reset: bool) -> anyhow::Result<()>;
     fn remotes(&self) -> anyhow::Result<Vec<String>>;
     fn default_remote(&self, for_push: bool) -> anyhow::Result<Option<String>>;
     fn default_remote_for_branch(

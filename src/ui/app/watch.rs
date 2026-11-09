@@ -75,7 +75,6 @@ impl App {
             (path.clone(), fingerprint)
         });
         if current != self.visible_file_fingerprint {
-            self.visible_file_fingerprint = current;
             self.refresh.deadline = Some(now);
         }
     }

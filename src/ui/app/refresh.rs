@@ -244,6 +244,7 @@ impl App {
                         self.selected_statuses.insert(0);
                     }
                     self.status_section = StatusSection::Unstaged;
+                    self.diff_stats_context = self.historical_commit.clone();
                     self.diff_stats.clear();
                     self.diff_hunk_counts.clear();
                     self.diff_stats.extend(
@@ -349,7 +350,24 @@ impl App {
         } = snapshot;
         if graph == self.graph && local_status == self.local_status {
             // Porcelain status records change kinds, not file contents.
-            self.refresh_visible_content();
+            let file = self.diff_path.as_ref().map(|path| {
+                let fingerprint = self.backend.as_ref().and_then(|backend| {
+                    let relative = path.to_path_buf().ok()?;
+                    let metadata =
+                        std::fs::metadata(backend.working_directory().join(relative)).ok()?;
+                    Some((metadata.modified().ok()?, metadata.len()))
+                });
+                (path.clone(), fingerprint)
+            });
+            let index = self
+                .backend
+                .as_ref()
+                .and_then(|backend| backend.index_fingerprint());
+            if file != self.visible_file_fingerprint || index != self.visible_index_fingerprint {
+                self.refresh_visible_content();
+            } else {
+                self.refresh_diff_stats();
+            }
             return;
         }
         let graph_display_refs = graph.display_refs_by_commit();
@@ -470,15 +488,27 @@ impl App {
         self.refresh_diff_stats();
     }
     pub(super) fn refresh_diff_stats(&mut self) {
-        self.diff_stats.clear();
-        self.diff_hunk_counts.clear();
+        if self.diff_stats_context != self.historical_commit {
+            self.diff_stats.clear();
+            self.diff_hunk_counts.clear();
+            self.diff_stats_context = self.historical_commit.clone();
+        }
+        let paths: HashSet<_> = self.status.iter().map(|entry| &entry.path).collect();
+        self.diff_stats.retain(|(path, _), _| paths.contains(path));
+        self.diff_hunk_counts.retain(|path, _| paths.contains(path));
         let Some(path) = self.repository_path.clone() else {
             return;
         };
+        if self.diff_stats_in_progress {
+            self.diff_stats_pending = true;
+            return;
+        }
+        self.diff_stats_in_progress = true;
         self.diff_stats_generation = self.diff_stats_generation.wrapping_add(1);
         let generation = self.diff_stats_generation;
         let entries = self.status.clone();
         let historical_commit = self.historical_commit.clone();
+        let context = historical_commit.clone();
         let sender = self.diff_stats_tx.clone();
         thread::spawn(move || {
             let result = (|| -> anyhow::Result<DiffStatsSnapshot> {
@@ -504,25 +534,44 @@ impl App {
                 Ok(DiffStatsSnapshot { stats, hunks })
             })()
             .map_err(|error| format!("{error:#}"));
-            let _ = sender.send(DiffStatsCompletion { generation, result });
+            let _ = sender.send(DiffStatsCompletion {
+                generation,
+                context,
+                result,
+            });
         });
     }
     pub(super) fn poll_diff_stats(&mut self) {
         while let Ok(completion) = self.diff_stats_rx.try_recv() {
             self.redraw = true;
-            if completion.generation != self.diff_stats_generation {
-                continue;
+            self.diff_stats_in_progress = false;
+            if completion.generation == self.diff_stats_generation
+                && completion.context == self.historical_commit
+            {
+                if let Ok(snapshot) = completion.result {
+                    let paths: HashSet<_> = self.status.iter().map(|entry| &entry.path).collect();
+                    self.diff_stats.clear();
+                    self.diff_hunk_counts.clear();
+                    for stat in snapshot
+                        .stats
+                        .into_iter()
+                        .filter(|stat| paths.contains(&stat.path))
+                    {
+                        self.diff_stats
+                            .insert((stat.path, stat.staged), (stat.added, stat.removed));
+                    }
+                    self.diff_hunk_counts.extend(
+                        snapshot
+                            .hunks
+                            .into_iter()
+                            .filter(|(path, _)| paths.contains(path)),
+                    );
+                }
             }
-            let Ok(snapshot) = completion.result else {
-                continue;
-            };
-            self.diff_stats.clear();
-            self.diff_hunk_counts.clear();
-            for stat in snapshot.stats {
-                self.diff_stats
-                    .insert((stat.path, stat.staged), (stat.added, stat.removed));
+            if self.diff_stats_pending {
+                self.diff_stats_pending = false;
+                self.refresh_diff_stats();
             }
-            self.diff_hunk_counts.extend(snapshot.hunks);
         }
     }
 }
@@ -556,6 +605,7 @@ pub(super) struct GraphDetailsCompletion {
 
 pub(super) struct DiffStatsCompletion {
     pub(super) generation: u64,
+    pub(super) context: Option<String>,
     pub(super) result: std::result::Result<DiffStatsSnapshot, String>,
 }
 

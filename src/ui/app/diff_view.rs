@@ -45,6 +45,16 @@ impl App {
     }
 
     pub(super) fn refresh_diff(&mut self) {
+        self.refresh_diff_with_worker(true);
+    }
+
+    /// Partial mutations must publish their new diff layer before another
+    /// hunk/line action can be accepted. Browsing uses the background reader.
+    pub(super) fn refresh_diff_after_mutation(&mut self) {
+        self.refresh_diff_with_worker(false);
+    }
+
+    fn refresh_diff_with_worker(&mut self, background: bool) {
         let previous_three_way_view = self.three_way_view.take();
         let previous_path = self.diff_path.clone();
         let previous_target = self.diff_target;
@@ -63,6 +73,44 @@ impl App {
             self.diff_full = false;
             self.diff_truncated = None;
         }
+        self.diff_generation = self.diff_generation.wrapping_add(1);
+        self.diff_loading = false;
+        self.visible_index_fingerprint = self
+            .backend
+            .as_ref()
+            .and_then(|backend| backend.index_fingerprint());
+        self.visible_file_fingerprint = self.diff_path.as_ref().map(|path| {
+            let fingerprint = self.backend.as_ref().and_then(|backend| {
+                let relative = path.to_path_buf().ok()?;
+                let metadata =
+                    std::fs::metadata(backend.working_directory().join(relative)).ok()?;
+                Some((metadata.modified().ok()?, metadata.len()))
+            });
+            (path.clone(), fingerprint)
+        });
+        if background && self.active_conflict_paths.is_empty() {
+            if let (Some(loader), Some(repository), Some(entry)) = (
+                &self.diff_loader,
+                &self.repository_path,
+                self.status.get(self.selected_status),
+            ) {
+                loader.request(diff_loader::DiffRequest {
+                    generation: self.diff_generation,
+                    repository: repository.clone(),
+                    entry: entry.clone(),
+                    target: self.diff_target,
+                    commit: self.historical_commit.clone(),
+                });
+                if previous_path != self.diff_path || previous_target != self.diff_target {
+                    self.set_diff_lines(Vec::new());
+                    self.diff_scroll = 0;
+                    self.diff_scroll_x = 0;
+                }
+                self.diff_error = None;
+                self.diff_loading = true;
+                return;
+            }
+        }
         self.diff_number_width = self
             .diff_path
             .as_ref()
@@ -74,15 +122,6 @@ impl App {
                 })
             })
             .unwrap_or(3);
-        self.visible_file_fingerprint = self.diff_path.as_ref().map(|path| {
-            let fingerprint = self.backend.as_ref().and_then(|backend| {
-                let relative = path.to_path_buf().ok()?;
-                let metadata =
-                    std::fs::metadata(backend.working_directory().join(relative)).ok()?;
-                Some((metadata.modified().ok()?, metadata.len()))
-            });
-            (path.clone(), fingerprint)
-        });
         let diff_result = self
             .status
             .get(self.selected_status)
@@ -91,7 +130,7 @@ impl App {
                     .as_ref()
                     .map(|backend| match &self.historical_commit {
                         Some(commit) => backend.commit_diff(commit, &entry.path),
-                        None => backend.diff(&entry.path, self.diff_target),
+                        None => backend.diff_entry(entry, self.diff_target),
                     })
             })
             .transpose()
@@ -178,6 +217,71 @@ impl App {
         if self.three_way_view.is_some() && self.focus == Focus::Status {
             self.focus = Focus::Diff;
         }
+    }
+
+    pub(super) fn poll_diff_load(&mut self) {
+        let Some(completion) = self
+            .diff_loader
+            .as_ref()
+            .and_then(|loader| loader.take_completed())
+        else {
+            return;
+        };
+        let request = completion.request;
+        if request.generation != self.diff_generation {
+            return;
+        }
+        self.diff_loading = false;
+        if self.diff_path.as_ref() != Some(&request.entry.path)
+            || self.diff_target != request.target
+            || self.historical_commit != request.commit
+        {
+            return;
+        }
+        self.redraw = true;
+        match completion.result {
+            Ok((diff, width)) => {
+                self.diff_number_width = width;
+                self.diff_error = None;
+                self.apply_diff_text(diff);
+            }
+            Err(error) => {
+                self.diff_error = Some(error.clone());
+                self.apply_diff_text(format!("\\ Could not load diff: {error}\n"));
+            }
+        }
+        self.selected_diff_hunk = self
+            .selected_diff_hunk
+            .min(self.hunk_header_indices.len().saturating_sub(1));
+        if self.line_mode
+            && !self.selected_diff_line.is_some_and(|index| {
+                self.diff_lines
+                    .get(index)
+                    .is_some_and(|line| matches!(line.kind, DiffKind::Added | DiffKind::Removed))
+            })
+        {
+            self.selected_diff_line = self
+                .diff_lines
+                .iter()
+                .position(|line| matches!(line.kind, DiffKind::Added | DiffKind::Removed));
+        }
+        if self.hunk_mode && self.hunk_header_indices.is_empty() {
+            self.hunk_mode = false;
+            if self.focus == Focus::Diff {
+                self.focus = Focus::Status;
+            }
+        }
+        if self.line_mode && self.selected_diff_line.is_none() {
+            self.select_file_mode();
+        }
+        self.ensure_diff_layout();
+        let viewport = self.diff_area.height.saturating_sub(2).max(1) as usize;
+        self.diff_scroll = self.diff_scroll.min(
+            self.diff_row_count()
+                .saturating_sub(viewport)
+                .min(u16::MAX as usize) as u16,
+        );
+        self.diff_scroll_x = self.diff_scroll_x.min(self.diff_max_scroll_x());
     }
 
     /// Rebuilds the cached diff layout when the diff or its mode changed.

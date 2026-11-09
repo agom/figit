@@ -33,6 +33,7 @@ impl App {
         crate::profile::mark("terminal ready");
         let res = (|| -> Result<()> {
             mouse?;
+            self.diff_loader = Some(super::diff_loader::DiffLoader::new());
             // Paint before any filesystem watcher registration. On Linux a
             // recursive watch visits every directory and can take seconds.
             terminal.draw(|frame| self.draw(frame))?;
@@ -48,6 +49,7 @@ impl App {
             self.event_loop(&mut terminal)
         })();
         self.stop_auto_fetch();
+        self.diff_loader = None;
         self.watch_setup = None;
         self.repository_watcher = None;
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
@@ -87,6 +89,7 @@ impl App {
             self.poll_graph_page();
             self.poll_graph_details();
             self.poll_diff_stats();
+            self.poll_diff_load();
             if self
                 .redraw_interval()
                 .is_some_and(|interval| last_frame.elapsed() >= interval)
