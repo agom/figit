@@ -9,8 +9,8 @@ impl App {
         self.redraw = true;
         if let Event::Mouse(mouse) = &event {
             let delta = match mouse.kind {
-                MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => Some(-1),
-                MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => Some(1),
+                MouseEventKind::ScrollUp => Some(-1),
+                MouseEventKind::ScrollDown => Some(1),
                 _ => None,
             };
             if let Some(delta) = delta {
@@ -57,10 +57,10 @@ impl App {
                         self.handle_mouse_scroll(mouse.column, mouse.row, 1)
                     }
                     MouseEventKind::ScrollLeft => {
-                        self.handle_mouse_scroll(mouse.column, mouse.row, -1)
+                        self.handle_mouse_horizontal_scroll(mouse.column, mouse.row, -1)
                     }
                     MouseEventKind::ScrollRight => {
-                        self.handle_mouse_scroll(mouse.column, mouse.row, 1)
+                        self.handle_mouse_horizontal_scroll(mouse.column, mouse.row, 1)
                     }
                     _ => {}
                 }
@@ -523,7 +523,9 @@ impl App {
                     return false;
                 }
                 if self.graph_action.is_some() {
-                    if self.graph_action == Some(GraphAction::Reset) {
+                    if self.graph_action == Some(GraphAction::Pull) {
+                        self.move_graph_popup_option(true);
+                    } else if self.graph_action == Some(GraphAction::Reset) {
                         self.reset_focus = (self.reset_focus + 1) % 4;
                     } else if self.graph_action == Some(GraphAction::Push) {
                         self.push_focus = (self.push_focus + 1) % 4;
@@ -745,6 +747,14 @@ impl App {
                     self.graph_action_return_focus = None;
                     self.discard_paths.clear();
                     self.focus = Focus::Status;
+                } else if self.graph_action == Some(GraphAction::Pull) {
+                    if self.pull_focus == 4 {
+                        self.graph_action = None;
+                        self.graph_action_return_focus = None;
+                        self.focus = Focus::Graph;
+                    } else {
+                        self.run_graph_action();
+                    }
                 } else if self.graph_action == Some(GraphAction::Reset) {
                     if self.reset_focus == 3 {
                         self.graph_action = None;
@@ -1166,27 +1176,102 @@ impl App {
             return;
         }
         let position = Position { x, y };
+        let amount = delta.unsigned_abs().min(u16::MAX as u32) as u16;
+        if amount == 0 {
+            return;
+        }
         if self.diff_area.contains(position) {
             if let Some(view) = &mut self.three_way_view {
                 view.scroll_by(delta as isize);
             } else if delta < 0 {
-                self.diff_scroll = self.diff_scroll.saturating_sub(1);
+                self.diff_scroll = self.diff_scroll.saturating_sub(amount);
             } else {
-                self.diff_scroll = self.diff_scroll.saturating_add(1);
+                self.diff_scroll = self.diff_scroll.saturating_add(amount);
             }
         } else if self.historical_commit.is_some() && self.details_area.contains(position) {
             self.focus = Focus::Details;
             if delta < 0 {
-                self.details_scroll = self.details_scroll.saturating_sub(1);
+                self.details_scroll = self.details_scroll.saturating_sub(amount);
             } else {
-                self.details_scroll = self.details_scroll.saturating_add(1);
+                self.details_scroll = self.details_scroll.saturating_add(amount);
             }
-        } else if self.graph_area.contains(position) && self.focus == Focus::Graph {
+        } else if self.graph_area.contains(position) {
+            self.scroll_to_selected_graph = false;
             if delta < 0 {
-                self.scroll_y = self.scroll_y.saturating_sub(3);
+                self.scroll_y = self.scroll_y.saturating_sub(usize::from(amount) * 3);
             } else {
-                self.scroll_y = self.scroll_y.saturating_add(3);
+                self.scroll_y = self.scroll_y.saturating_add(usize::from(amount) * 3);
             }
+        } else if self.staging_area.contains(position) {
+            let (section, pane, indices) = if self.historical_commit.is_some() {
+                (
+                    StatusSection::Unstaged,
+                    self.staging_area,
+                    (0..self.status.len()).collect::<Vec<_>>(),
+                )
+            } else {
+                let panes = self.staging_panes(self.staging_area);
+                let (section, pane) = if panes[0].contains(position) {
+                    (StatusSection::Unstaged, panes[0])
+                } else {
+                    (StatusSection::Staged, panes[1])
+                };
+                (section, pane, self.section_indices(section).to_vec())
+            };
+            if indices.is_empty()
+                || !pane
+                    .inner(Margin {
+                        horizontal: 1,
+                        vertical: 1,
+                    })
+                    .contains(position)
+            {
+                return;
+            }
+            let current = indices
+                .iter()
+                .position(|&i| i == self.selected_status)
+                .unwrap_or(0);
+            let step = usize::from(amount) * 3;
+            let next = if delta < 0 {
+                current.saturating_sub(step)
+            } else {
+                current.saturating_add(step).min(indices.len() - 1)
+            };
+            if self.status_section == section && self.selected_status == indices[next] {
+                return;
+            }
+            self.focus = Focus::Status;
+            self.status_section = section;
+            self.selected_status = indices[next];
+            self.selected_statuses.clear();
+            self.selected_statuses.insert(self.selected_status);
+            self.refresh_diff();
+        }
+    }
+
+    fn handle_mouse_horizontal_scroll(&mut self, x: u16, y: u16, delta: i32) {
+        if !self.modal_closed() {
+            return;
+        }
+        let position = Position { x, y };
+        if self.diff_area.contains(position) {
+            if let Some(view) = &mut self.three_way_view {
+                view.scroll_x = if delta < 0 {
+                    view.scroll_x.saturating_sub(4)
+                } else {
+                    view.scroll_x.saturating_add(4)
+                };
+                view.clamp_scroll();
+            } else {
+                self.pan_diff_horizontal(delta * 4);
+            }
+        } else if self.graph_area.contains(position) {
+            self.scroll_x = if delta < 0 {
+                self.scroll_x.saturating_sub(3)
+            } else {
+                self.scroll_x.saturating_add(3)
+            };
         }
     }
 }

@@ -1594,7 +1594,7 @@ fn external_worktree_and_commit_changes_refresh_the_tui() {
     tui.send(b"\x1b[A");
     tui.wait_for("Unstaged (1)");
     tui.wait_for("file.txt");
-    assert!(tui.contents().contains("external edit"));
+    tui.wait_for("external edit");
 
     git_ok(repository.path(), &["add", "file.txt"]);
     git_ok(
@@ -3305,6 +3305,7 @@ fn generate_screenshot_set(light: bool) {
         )
     };
     let capture = |tui: &Tui, path: &str| {
+        tui.wait_until_hidden("Loading");
         let screen = tui.screen.lock().expect("screen lock");
         let path = if light {
             path.replace(".png", "-light.png")
@@ -3325,6 +3326,8 @@ fn generate_screenshot_set(light: bool) {
         .unwrap()
         .success());
     let mut tui = launch(&dest);
+    tui.wait_for("+first changed");
+    tui.wait_for("2/2 hunks");
     capture(&tui, "assets/screenshot.png");
     tui.send(b"\t");
     tui.send(b"\x1b[B\x1b[B\x1b[B\x1b[B");
@@ -3879,5 +3882,220 @@ fn autosquash_conflict_opens_the_resolver_and_abort_preserves_the_fixup() {
         std::fs::read_to_string(path.join("file.txt")).unwrap(),
         "correction based on tip\n"
     );
+    tui.quit();
+}
+
+#[test]
+fn pull_dialog_selects_a_strategy_for_divergent_history() {
+    let repository = init_linear_repository();
+    let remote_dir = TempDir::new().unwrap();
+    let remote = remote_dir.path().join("remote.git");
+    git_ok(
+        repository.path(),
+        &["clone", "--quiet", "--bare", ".", remote.to_str().unwrap()],
+    );
+    git_ok(
+        repository.path(),
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git_ok(repository.path(), &["fetch", "--quiet", "origin"]);
+    git_ok(
+        repository.path(),
+        &["branch", "--set-upstream-to=origin/main"],
+    );
+    let peer = remote_dir.path().join("peer");
+    git_ok(
+        remote_dir.path(),
+        &[
+            "clone",
+            "--quiet",
+            remote.to_str().unwrap(),
+            peer.to_str().unwrap(),
+        ],
+    );
+    configure_peer(&peer);
+    std::fs::write(peer.join("remote.txt"), "remote\n").unwrap();
+    git_ok(&peer, &["add", "remote.txt"]);
+    git_ok(&peer, &["commit", "-qm", "remote update"]);
+    git_ok(&peer, &["push", "--quiet"]);
+    std::fs::write(repository.path().join("local.txt"), "local\n").unwrap();
+    git_ok(repository.path(), &["add", "local.txt"]);
+    git_ok(repository.path(), &["commit", "-qm", "local update"]);
+    git_ok(repository.path(), &["config", "pull.ff", "only"]);
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("local update");
+    tui.send(b"p");
+    tui.wait_for("Configured");
+    tui.wait_for("Fast-forward only");
+    tui.wait_for("Rebase");
+    tui.wait_for("Merge");
+    // Choose Merge even though pull.ff=only is configured.
+    tui.send(b"\x1b[B\x1b[B\x1b[B\r");
+    tui.wait_for("Pull complete");
+    tui.wait_for_title_focus("Graph");
+    assert!(repository.path().join("remote.txt").exists());
+    assert!(repository.path().join("local.txt").exists());
+    assert_eq!(
+        git_ok(repository.path(), &["show", "-s", "--format=%P", "HEAD"])
+            .split_whitespace()
+            .count(),
+        2
+    );
+    assert_eq!(git_ok(repository.path(), &["config", "pull.ff"]), "only");
+    tui.quit();
+}
+
+#[test]
+fn command_palette_updates_an_inactive_branch_without_checkout() {
+    let repository = init_linear_repository();
+    let remote_dir = TempDir::new().unwrap();
+    let remote = remote_dir.path().join("remote.git");
+    git_ok(
+        repository.path(),
+        &["clone", "--quiet", "--bare", ".", remote.to_str().unwrap()],
+    );
+    git_ok(
+        repository.path(),
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git_ok(repository.path(), &["fetch", "--quiet", "origin"]);
+    git_ok(
+        repository.path(),
+        &["branch", "--set-upstream-to=origin/main"],
+    );
+    git_ok(repository.path(), &["checkout", "-qb", "work"]);
+    std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
+    git_ok(repository.path(), &["add", "work.txt"]);
+    git_ok(repository.path(), &["commit", "-qm", "current work"]);
+    let head = git_ok(repository.path(), &["rev-parse", "HEAD"]);
+    let peer = remote_dir.path().join("peer");
+    git_ok(
+        remote_dir.path(),
+        &[
+            "clone",
+            "--quiet",
+            remote.to_str().unwrap(),
+            peer.to_str().unwrap(),
+        ],
+    );
+    configure_peer(&peer);
+    std::fs::write(peer.join("remote.txt"), "remote\n").unwrap();
+    git_ok(&peer, &["add", "remote.txt"]);
+    git_ok(&peer, &["commit", "-qm", "remote update"]);
+    git_ok(&peer, &["push", "--quiet"]);
+    let remote_tip = git_ok(&peer, &["rev-parse", "HEAD"]);
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("current work");
+    tui.send(b"\x1b[B"); // main, one commit below the checked-out work branch.
+    tui.wait_for_selected_text("tip commit");
+    tui.send(b":Update branch from upstream\r");
+    tui.wait_for("Fetch origin/main and fast-forward main?");
+    tui.send(b"\r");
+    tui.wait_for("remote update");
+    tui.wait_for_title_focus("Graph");
+    assert_eq!(
+        git_ok(repository.path(), &["rev-parse", "main"]),
+        remote_tip
+    );
+    assert_eq!(git_ok(repository.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git_ok(repository.path(), &["branch", "--show-current"]),
+        "work"
+    );
+    assert!(!repository.path().join("remote.txt").exists());
+    tui.quit();
+}
+
+#[test]
+fn reset_branch_confirmation_defaults_to_cancel_and_never_checks_out_the_branch() {
+    let repository = init_linear_repository();
+    let remote_dir = TempDir::new().unwrap();
+    let remote = remote_dir.path().join("remote.git");
+    git_ok(
+        repository.path(),
+        &["clone", "--quiet", "--bare", ".", remote.to_str().unwrap()],
+    );
+    git_ok(
+        repository.path(),
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git_ok(repository.path(), &["fetch", "--quiet", "origin"]);
+    git_ok(
+        repository.path(),
+        &["branch", "--set-upstream-to=origin/main"],
+    );
+    let upstream = git_ok(repository.path(), &["rev-parse", "origin/main"]);
+    std::fs::write(repository.path().join("local.txt"), "local\n").unwrap();
+    git_ok(repository.path(), &["add", "local.txt"]);
+    git_ok(repository.path(), &["commit", "-qm", "local only"]);
+    let local_tip = git_ok(repository.path(), &["rev-parse", "HEAD"]);
+    git_ok(repository.path(), &["checkout", "-qb", "work"]);
+    std::fs::write(repository.path().join("work.txt"), "work\n").unwrap();
+    git_ok(repository.path(), &["add", "work.txt"]);
+    git_ok(repository.path(), &["commit", "-qm", "current work"]);
+    let head = git_ok(repository.path(), &["rev-parse", "HEAD"]);
+    let mut tui = Tui::launch(repository.path());
+    tui.wait_for("current work");
+    tui.send(b"\x1b[B");
+    tui.wait_for_selected_text("local only");
+    tui.send(b":Reset branch to upstream\r");
+    tui.wait_for("Local-only commits will be removed");
+    // Enter alone cancels the destructive action.
+    tui.send(b"\r");
+    tui.wait_for_title_focus("Graph");
+    assert_eq!(git_ok(repository.path(), &["rev-parse", "main"]), local_tip);
+    tui.send(b":Reset branch to upstream\r");
+    tui.wait_for("Local-only commits will be removed");
+    tui.send(b"\t\r");
+    tui.wait_for_operation("Reset branch to upstream");
+    tui.wait_for_title_focus("Graph");
+    assert_eq!(git_ok(repository.path(), &["rev-parse", "main"]), upstream);
+    assert_eq!(git_ok(repository.path(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git_ok(repository.path(), &["branch", "--show-current"]),
+        "work"
+    );
+    assert!(repository.path().join("local.txt").exists());
+    assert!(repository.path().join("work.txt").exists());
+    tui.quit();
+}
+
+#[test]
+fn large_staging_lists_keep_rapid_navigation_and_wheel_diffs_in_sync() {
+    let repository = TempDir::new().unwrap();
+    let path = repository.path();
+    git_ok(path, &["init", "--quiet", "--initial-branch=main"]);
+    configure_user(path);
+    for i in 0..600 {
+        std::fs::write(path.join(format!("file-{i:03}.txt")), "base\n").unwrap();
+    }
+    git_ok(path, &["add", "."]);
+    git_ok(path, &["commit", "-qm", "many files"]);
+    for i in 0..600 {
+        std::fs::write(
+            path.join(format!("file-{i:03}.txt")),
+            format!("changed-{i:03}\n"),
+        )
+        .unwrap();
+    }
+    let mut tui = Tui::launch(path);
+    tui.wait_for("Unstaged (600)");
+    tui.wait_for("+changed-000");
+    tui.send(b"\x1b[B".repeat(299).as_slice());
+    tui.wait_for_selected_text("file-299.txt");
+    tui.wait_for("+changed-299");
+    assert!(!tui.contents().contains("+changed-000"));
+    let screen = tui.contents();
+    let row = screen
+        .lines()
+        .position(|line| line.contains("Unstaged (600)"))
+        .unwrap();
+    // SGR wheel-down over the unstaged pane, using terminal coordinates.
+    tui.send(format!("\x1b[<65;60;{}M", row + 3).as_bytes());
+    tui.wait_for_selected_text("file-302.txt");
+    tui.wait_for("+changed-302");
+    tui.send(format!("\x1b[<64;60;{}M", row + 3).as_bytes());
+    tui.wait_for_selected_text("file-299.txt");
+    tui.wait_for("+changed-299");
     tui.quit();
 }

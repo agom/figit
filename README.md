@@ -123,9 +123,34 @@ whether the history is published. Autosquash preserves merges and stops in the
 normal conflict workflow if necessary. Resolve and continue, or abort; a newly
 created fixup commit is retained when the rebase is aborted.
 
+### Pulling and updating branches
+
+Select the checked-out branch in the graph and press `p` to choose a pull strategy:
+your configured Git behavior, fast-forward only, rebase, or merge. The choice
+applies to this pull without changing your Git configuration. If Git reports
+divergent histories, choose rebase to replay local commits or merge to combine
+both histories. Resolve any conflicts with the normal conflict workflow.
+
+For any local branch in the graph, press `:` and search for:
+
+- **Update branch from upstream…** — fetch and fast-forward the branch. Stops
+  if updating would discard local commits. An inactive branch is updated without
+  checking it out or changing your current files or index.
+- **Reset branch to upstream…** — fetch and move the branch to its upstream's
+  latest commit, discarding local-only commits. Requires confirmation, with
+  Cancel selected initially. Resetting the checked-out branch also discards
+  staged and unstaged changes; untracked files obstructing checkout may be removed.
+
+These commands require a configured upstream and refuse to update a branch
+checked out in another worktree. A branch or checkout changed while the command
+was pending requires a fresh confirmation.
+
 ## Key map
 
 ### General
+
+The mouse wheel scrolls the panel under the pointer. In the staged, unstaged,
+and commit file lists, it moves the file selection and updates the diff.
 
 | Key | Action |
 | --- | --- |

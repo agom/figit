@@ -106,6 +106,8 @@ impl App {
             self.diff_stats.clear();
             self.diff_hunk_counts.clear();
             self.diff_path = None;
+            self.diff_generation = self.diff_generation.wrapping_add(1);
+            self.diff_loading = false;
             self.diff_lines.clear();
             self.diff_cache = None;
             self.details_loading = true;

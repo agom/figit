@@ -2508,6 +2508,10 @@ fn renamed_files_preserve_identity_and_only_count_content_edits() {
             (usize::from(edited), 0)
         );
         let diff = backend.diff(&new_path, DiffTarget::Index).unwrap();
+        assert_eq!(
+            backend.diff_entry(&status[0], DiffTarget::Index).unwrap(),
+            diff
+        );
         assert!(diff.contains("rename from old name.txt"), "{diff}");
         assert_eq!(diff.contains("@@"), edited);
         git_ok(path, &["commit", "--quiet", "-m", "rename"]);

@@ -6,6 +6,7 @@ mod commit;
 mod conflict;
 mod conflict_model;
 mod diff;
+mod diff_loader;
 mod diff_view;
 mod graph;
 mod input;
@@ -48,9 +49,9 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::backend::{
-    ConflictCommits, ConflictResolution, ConflictSide, DiffLineSelection, DiffTarget, GitBackend,
-    GraphWindow, PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock,
-    RebasePlanEntry, RebaseTodoAction, StashEntry, UndoInfo,
+    BranchUpdate, ConflictCommits, ConflictResolution, ConflictSide, DiffLineSelection, DiffTarget,
+    GitBackend, GraphWindow, PathDiffStats, PullStrategy, RebaseAction, RebaseOutcome, RebasePlan,
+    RebasePlanBlock, RebasePlanEntry, RebaseTodoAction, StashEntry, UndoInfo,
 };
 use crate::core::model::{
     BranchTracking, Commit, DisplayRef, GitPath, GraphModel, RefKind, StatusEntry,
@@ -123,6 +124,9 @@ pub struct App {
     /// Cached diff layout (cheap) for the current mode; rows are materialized
     /// on demand so syntax highlighting only runs for the visible slice.
     diff_cache: Option<(DiffMode, Vec<DiffRow>)>,
+    diff_loader: Option<diff_loader::DiffLoader>,
+    diff_generation: u64,
+    diff_loading: bool,
     /// Indices of hunk-header lines within `diff_lines`, recomputed only when
     /// the diff changes so the render and hunk-navigation paths don't rescan.
     hunk_header_indices: Vec<usize>,
@@ -178,6 +182,9 @@ pub struct App {
     remote_action: bool,
     push_mode: usize,
     push_focus: usize,
+    pull_focus: usize,
+    pull_branch: Option<String>,
+    branch_update: Option<BranchUpdate>,
     action_error: Option<String>,
     undo_options: Vec<UndoInfo>,
     undo_selection: usize,
@@ -193,6 +200,7 @@ pub struct App {
     watcher_poll_deadline: Option<Instant>,
     visible_file_poll_deadline: Option<Instant>,
     visible_file_fingerprint: Option<(GitPath, Option<(std::time::SystemTime, u64)>)>,
+    visible_index_fingerprint: Option<(std::time::SystemTime, u64)>,
     watch_setup: Option<watch::WatcherSetup>,
     repository_watcher: Option<watch::LiveWatcher>,
     graph_details_tx: Sender<GraphDetailsCompletion>,
@@ -202,6 +210,9 @@ pub struct App {
     diff_stats_tx: Sender<DiffStatsCompletion>,
     diff_stats_rx: Receiver<DiffStatsCompletion>,
     diff_stats_generation: u64,
+    diff_stats_context: Option<String>,
+    diff_stats_in_progress: bool,
+    diff_stats_pending: bool,
     details_loading: bool,
     details_error: Option<String>,
     search_popup: Option<SearchPopupState>,
@@ -329,6 +340,9 @@ impl App {
             diff_target: DiffTarget::Worktree,
             diff_path: None,
             diff_cache: None,
+            diff_loader: None,
+            diff_generation: 0,
+            diff_loading: false,
             hunk_header_indices: Vec::new(),
             diff_stats: HashMap::new(),
             diff_hunk_counts: HashMap::new(),
@@ -383,6 +397,9 @@ impl App {
             remote_action: false,
             push_mode: 0,
             push_focus: 0,
+            pull_focus: 0,
+            pull_branch: None,
+            branch_update: None,
             action_error: None,
             undo_options: Vec::new(),
             undo_selection: 0,
@@ -395,6 +412,7 @@ impl App {
             watcher_poll_deadline: None,
             visible_file_poll_deadline: Some(Instant::now() + Duration::from_millis(500)),
             visible_file_fingerprint: None,
+            visible_index_fingerprint: None,
             watch_setup: None,
             repository_watcher: None,
             graph_details_tx,
@@ -404,6 +422,9 @@ impl App {
             diff_stats_tx,
             diff_stats_rx,
             diff_stats_generation: 0,
+            diff_stats_context: None,
+            diff_stats_in_progress: false,
+            diff_stats_pending: false,
             details_loading: false,
             details_error: None,
             search_popup: None,

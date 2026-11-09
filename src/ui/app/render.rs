@@ -200,7 +200,9 @@ impl App {
             let rendered_len;
             let diff_widget = if self.diff_lines.is_empty() {
                 rendered_len = 0;
-                Paragraph::new(if self.details_loading {
+                Paragraph::new(if self.diff_loading && self.diff_path.is_some() {
+                    "Loading diff…"
+                } else if self.details_loading {
                     "Loading commit diff…"
                 } else if self.diff_path.is_some() {
                     "No text changes to show for this file"
@@ -963,7 +965,7 @@ impl App {
         );
     }
 
-    fn render_commit_details(&self, f: &mut Frame, area: Rect) {
+    fn render_commit_details(&mut self, f: &mut Frame, area: Rect) {
         let Some(id) = self.historical_commit.as_deref() else {
             return;
         };
@@ -1012,6 +1014,7 @@ impl App {
         let viewport = area.height.saturating_sub(2) as usize;
         let scroll =
             (self.details_scroll as usize).min(visual_lines.saturating_sub(viewport)) as u16;
+        self.details_scroll = scroll;
         let focused = self.focus == Focus::Details;
         let title_style = Style::default()
             .fg(Color::LightCyan)
@@ -1305,7 +1308,14 @@ impl App {
     fn render_graph_action_popup(&self, f: &mut Frame, area: Rect) {
         let action = self.graph_action.unwrap();
         let is_option_picker = matches!(action, GraphAction::Reset | GraphAction::Push);
-        let popup_height = if is_option_picker {
+        let popup_height = if action == GraphAction::Pull {
+            area.height.min(12)
+        } else if matches!(
+            action,
+            GraphAction::UpdateBranch | GraphAction::ResetBranchRemote
+        ) {
+            area.height.min(14)
+        } else if is_option_picker {
             area.height.min(6)
         } else if matches!(action, GraphAction::Fetch | GraphAction::PushRemote) {
             self.remote_choices
@@ -1319,7 +1329,13 @@ impl App {
         } else {
             area.height.min(8)
         };
-        let popup_width = if action == GraphAction::Undo {
+        let popup_width = if matches!(
+            action,
+            GraphAction::Undo
+                | GraphAction::Pull
+                | GraphAction::UpdateBranch
+                | GraphAction::ResetBranchRemote
+        ) {
             area.width * 4 / 5
         } else {
             area.width * 3 / 5
@@ -1353,6 +1369,8 @@ impl App {
                 }
             }
             GraphAction::Pull => "Pull",
+            GraphAction::UpdateBranch => "Update branch from upstream",
+            GraphAction::ResetBranchRemote => "Reset branch to upstream",
             GraphAction::Fetch => "Fetch from remote",
             GraphAction::PushRemote => "Push to remote",
             GraphAction::Push => "Push",
@@ -1382,7 +1400,7 @@ impl App {
                 ],
                 Color::LightCyan,
             ),
-            GraphAction::Reset | GraphAction::Push => styled_key_hints(
+            GraphAction::Reset | GraphAction::Push | GraphAction::Pull => styled_key_hints(
                 &[("Tab/↑↓", "next"), ("Enter", "select"), ("Esc", "close")],
                 Color::LightCyan,
             ),
@@ -1447,6 +1465,28 @@ impl App {
             self.render_undo_popup(f, inner);
             return;
         }
+        if action == GraphAction::Pull {
+            let labels = [
+                "Configured — use your Git pull settings",
+                "Fast-forward only — stop if histories diverged",
+                "Rebase — replay local commits onto upstream",
+                "Merge — combine histories, keeping local commits",
+                "Cancel",
+            ];
+            let mut lines = vec![Line::from(format!(
+                "Pull {} from its upstream:",
+                self.pull_branch.as_deref().unwrap_or("branch")
+            ))];
+            lines.extend(labels.iter().enumerate().map(|(i, label)| {
+                Line::from(Span::styled(
+                    format!("{} {label}", if self.pull_focus == i { "▸" } else { " " }),
+                    self.button_style(self.pull_focus == i),
+                ))
+            }));
+            lines.push(Line::from("One-time choice; Git settings are unchanged."));
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+            return;
+        }
         if matches!(action, GraphAction::Fetch | GraphAction::PushRemote) {
             self.render_remote_picker(f, inner);
             return;
@@ -1503,9 +1543,24 @@ impl App {
             );
             return;
         }
-        let content_height = if self.action_error.is_some() { 5 } else { 3 };
-        let panes = Layout::vertical([Constraint::Length(content_height), Constraint::Length(3)])
-            .split(inner);
+        let content_height = if self.action_error.is_some()
+            || matches!(
+                action,
+                GraphAction::UpdateBranch | GraphAction::ResetBranchRemote
+            ) {
+            6
+        } else {
+            3
+        };
+        let content_constraint = if matches!(
+            action,
+            GraphAction::UpdateBranch | GraphAction::ResetBranchRemote
+        ) {
+            Constraint::Min(0)
+        } else {
+            Constraint::Length(content_height)
+        };
+        let panes = Layout::vertical([content_constraint, Constraint::Length(3)]).split(inner);
         let mut content = match action {
             GraphAction::Branch => format!("Branch name: {}", self.graph_action_input),
             GraphAction::Tag => format!("Tag name: {}", self.graph_action_input),
@@ -1556,6 +1611,19 @@ impl App {
                 self.selected_commit_label()
             ),
             GraphAction::Pull => "Pull from the tracked remote?".to_string(),
+            GraphAction::UpdateBranch | GraphAction::ResetBranchRemote => {
+                self.branch_update.as_ref().map(|plan| {
+                    let current = plan.head_ref.as_deref() == Some(&format!("refs/heads/{}", plan.branch));
+                    if action == GraphAction::ResetBranchRemote {
+                        format!("Fetch {} and reset {} to its latest tip?\nLocal-only commits will be removed from this branch.\n{}",
+                            plan.upstream, plan.branch,
+                            if current { "Staged and unstaged changes will be discarded.\nUntracked files obstructing checkout may also be removed." } else { "Your current branch, index and files will stay unchanged." })
+                    } else {
+                        format!("Fetch {} and fast-forward {}?\nStops if local commits would be lost.\n{}", plan.upstream, plan.branch,
+                            if current { "Updates the checked-out branch and its files." } else { "Updates the branch without checking it out.\nYour current branch, index and files will stay unchanged." })
+                    }
+                }).unwrap_or_default()
+            }
             GraphAction::Fetch | GraphAction::PushRemote => {
                 unreachable!("remote picker has a dedicated renderer")
             }
@@ -1817,6 +1885,8 @@ impl App {
         if area.is_empty() {
             return;
         }
+        let viewport = area.height.saturating_sub(2) as usize;
+        let scroll = self.status_list_scroll(indices, area);
         let mut lines: Vec<Line> = if indices.is_empty() {
             let empty = if self.details_loading && self.historical_commit.is_some() {
                 "Loading files…"
@@ -1834,6 +1904,8 @@ impl App {
         } else {
             indices
                 .iter()
+                .skip(scroll)
+                .take(viewport)
                 .map(|&i| {
                     self.file_status_line(
                         i,
@@ -1875,14 +1947,7 @@ impl App {
             })
             .title(title);
         let block = self.panel_footer(block, area, focused, None);
-        let viewport = area.height.saturating_sub(2) as usize;
-        let scroll = self.status_list_scroll(indices, area);
-        f.render_widget(
-            Paragraph::new(lines)
-                .scroll((scroll as u16, 0))
-                .block(block),
-            area,
-        );
+        f.render_widget(Paragraph::new(lines).block(block), area);
         if indices.len() > viewport {
             let mut state = ScrollbarState::new(indices.len())
                 .position(scrollbar_position(scroll, indices.len(), viewport))

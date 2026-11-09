@@ -209,6 +209,20 @@ impl App {
                             "r",
                             "reset branch",
                         );
+                        if self.selected_local_branch().is_some() {
+                            add(
+                                Graph(GraphAction::UpdateBranch),
+                                "Update branch from upstream…",
+                                "",
+                                "pull|fetch|fast-forward|remote|sync",
+                            );
+                            add(
+                                Graph(GraphAction::ResetBranchRemote),
+                                "Reset branch to upstream…",
+                                "",
+                                "pull|fetch|remote|discard|sync",
+                            );
+                        }
                         add(
                             Graph(GraphAction::Revert),
                             "Revert commit",
@@ -340,8 +354,10 @@ impl App {
                             _ => "Stage selected files",
                         };
                         if (!self.hunk_mode && !self.line_mode)
-                            || (self.hunk_mode && hunks)
-                            || (self.line_mode && self.selected_diff_line.is_some())
+                            || (self.hunk_mode && !self.diff_loading && hunks)
+                            || (self.line_mode
+                                && !self.diff_loading
+                                && self.selected_diff_line.is_some())
                         {
                             add(ApplySelection, label, "Space", "index|selection");
                         }
@@ -372,7 +388,7 @@ impl App {
                         if self.hunk_mode || self.line_mode {
                             add(FileMode, "Use file selection mode", "f", "whole file");
                         }
-                        if hunks {
+                        if hunks || self.diff_loading {
                             add(
                                 HunkMode,
                                 if self.hunk_mode {
@@ -384,7 +400,7 @@ impl App {
                                 "partial stage",
                             );
                         }
-                        if changes {
+                        if changes || self.diff_loading {
                             add(
                                 LineMode,
                                 if self.line_mode {
@@ -400,6 +416,7 @@ impl App {
                     if self.focus == Focus::Diff
                         && self.diff_path.is_some()
                         && !self.details_loading
+                        && !self.diff_loading
                     {
                         if !historical
                             && self.diff_target == DiffTarget::Worktree
@@ -531,6 +548,8 @@ impl App {
     pub(super) fn execute_panel_command(&mut self, id: CommandId) {
         use CommandId::*;
         match id {
+            Graph(GraphAction::UpdateBranch) => self.open_branch_update(false),
+            Graph(GraphAction::ResetBranchRemote) => self.open_branch_update(true),
             Graph(GraphAction::CheckoutBranch | GraphAction::Rename) => {
                 if let Graph(action) = id {
                     self.open_branch_ref_action(action);

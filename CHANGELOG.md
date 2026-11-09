@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.5 - 2026-11-09
+
+### Added
+
+- Choose configured behavior, fast-forward only, rebase, or merge when pulling, without changing Git settings.
+- Add command-palette actions to fetch and fast-forward a local branch from its upstream, or reset it to the upstream's latest commit, without checking out inactive branches. Confirm destructive resets and protect branches used by other worktrees.
+
+### Improved
+
+- Load file diffs in the background with a bounded worker that skips intermediate selections and rejects stale results during rapid navigation.
+- Render only visible file-list rows and reuse loaded status entries for rename-aware diffs instead of rescanning the repository for each file.
+- Preserve the current diff and viewport during refresh, clamp scrolling when content shrinks, and avoid reloading unchanged diffs on periodic checks.
+- Keep hunk and line actions consistent after partial staging, unstaging, and discarding.
+
+### Fixed
+
+- Support mouse-wheel navigation in staged, unstaged, and commit file lists, and scroll the graph under the pointer without requiring keyboard focus.
+- Preserve coalesced wheel distances and handle horizontal scrolling separately, including in the conflict resolver.
+- Stop line and hunk counters blinking on periodic refresh by retaining displayed values until replacements arrive and coalescing counter jobs.
+- Ignore counter results from previously selected commits and avoid optional index writes during read-only diff queries.
+
 ## 0.1.4 - 2026-11-05
 
 ### Added

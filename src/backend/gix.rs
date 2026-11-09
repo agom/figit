@@ -447,6 +447,7 @@ impl GixBackend {
         let mut command = Command::new("git");
         command.args([
             "--literal-pathspecs",
+            "--no-optional-locks",
             "-c",
             "core.quotePath=false",
             "diff",
@@ -524,6 +525,7 @@ impl GixBackend {
         let mut command = Command::new("git");
         command.args([
             "--literal-pathspecs",
+            "--no-optional-locks",
             "diff",
             "--numstat",
             "-z",
@@ -765,7 +767,81 @@ impl GixBackend {
     }
 }
 
+impl GixBackend {
+    fn diff_with_paths(
+        &self,
+        path: &GitPath,
+        target: DiffTarget,
+        paths: &[GitPath],
+    ) -> Result<String> {
+        let unmerged =
+            git_output_with_path_checked(&self.workdir, &["ls-files", "-u", "-z", "--"], path)?;
+        if !unmerged.stdout.is_empty() {
+            if self.conflict_is_too_large(path) {
+                return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+            }
+            let combined = git_output_with_path_checked(
+                &self.workdir,
+                &["diff", "--cc", "--no-ext-diff", "--"],
+                path,
+            )?;
+            let mut conflict_diff = self.conflict_diff(path)?;
+            let combined = String::from_utf8_lossy(&combined.stdout);
+            if !combined.trim().is_empty()
+                && !combined
+                    .lines()
+                    .all(|line| line.starts_with("* Unmerged path"))
+            {
+                conflict_diff.push_str("\nCombined conflict diff:\n");
+                conflict_diff.push_str(&combined);
+            }
+            return Ok(conflict_diff);
+        }
+        if target == DiffTarget::Worktree && self.is_untracked(path)? {
+            if self.worktree_is_too_large(path) {
+                return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+            }
+            return self.untracked_diff(path);
+        }
+        if self.diff_is_too_large(path, target) {
+            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+        }
+        let mut args = vec![
+            "--no-optional-locks",
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--unified=3",
+            "--find-renames",
+        ];
+        if target == DiffTarget::Index {
+            args.push("--cached");
+        }
+        args.push("--");
+        if paths
+            .iter()
+            .skip(1)
+            .any(|path| self.diff_is_too_large(path, target))
+        {
+            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+        }
+        let output = git_output_with_paths(&self.workdir, &args, paths).context("run git diff")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git diff failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
 impl super::GitBackend for GixBackend {
+    fn index_fingerprint(&self) -> Option<(std::time::SystemTime, u64)> {
+        let metadata = fs::metadata(self.repo.index_path()).ok()?;
+        Some((metadata.modified().ok()?, metadata.len()))
+    }
+
     fn working_directory(&self) -> &Path {
         &self.workdir
     }
@@ -916,65 +992,21 @@ impl super::GitBackend for GixBackend {
     }
 
     fn diff(&self, path: &GitPath, target: DiffTarget) -> Result<String> {
-        let unmerged =
-            git_output_with_path_checked(&self.workdir, &["ls-files", "-u", "-z", "--"], path)?;
-        if !unmerged.stdout.is_empty() {
-            if self.conflict_is_too_large(path) {
-                return Ok(too_large_diff_notice(path, self.diff_size_limit()));
-            }
-            let combined = git_output_with_path_checked(
-                &self.workdir,
-                &["diff", "--cc", "--no-ext-diff", "--"],
-                path,
-            )?;
-            let mut conflict_diff = self.conflict_diff(path)?;
-            let combined = String::from_utf8_lossy(&combined.stdout);
-            if !combined.trim().is_empty()
-                && !combined
-                    .lines()
-                    .all(|line| line.starts_with("* Unmerged path"))
-            {
-                conflict_diff.push_str("\nCombined conflict diff:\n");
-                conflict_diff.push_str(&combined);
-            }
-            return Ok(conflict_diff);
-        }
-        if target == DiffTarget::Worktree && self.is_untracked(path)? {
-            if self.worktree_is_too_large(path) {
-                return Ok(too_large_diff_notice(path, self.diff_size_limit()));
-            }
-            return self.untracked_diff(path);
-        }
-        if self.diff_is_too_large(path, target) {
-            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
-        }
-        let mut args = vec![
-            "diff",
-            "--no-ext-diff",
-            "--no-color",
-            "--unified=3",
-            "--find-renames",
-        ];
-        if target == DiffTarget::Index {
-            args.push("--cached");
-        }
-        args.push("--");
         let paths = self.status_paths(path, target)?;
-        if paths
-            .iter()
-            .skip(1)
-            .any(|path| self.diff_is_too_large(path, target))
-        {
-            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+        self.diff_with_paths(path, target, &paths)
+    }
+
+    fn diff_entry(&self, entry: &StatusEntry, target: DiffTarget) -> Result<String> {
+        let mut paths = vec![entry.path.clone()];
+        let code = if target == DiffTarget::Index {
+            entry.index
+        } else {
+            entry.worktree
+        };
+        if matches!(code, 'R' | 'C') {
+            paths.extend(entry.original_path.clone());
         }
-        let output = git_output_with_paths(&self.workdir, &args, &paths).context("run git diff")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "git diff failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        self.diff_with_paths(&entry.path, target, &paths)
     }
 
     fn diff_hunk_counts(&self, path: &GitPath) -> Result<(usize, usize)> {
@@ -2459,8 +2491,16 @@ impl super::GitBackend for GixBackend {
         Ok(())
     }
 
-    fn pull(&self) -> Result<()> {
-        run_git(&self.workdir, ["pull"])
+    fn pull(&self, branch: &str, strategy: crate::backend::PullStrategy) -> Result<()> {
+        self.pull_impl(branch, strategy)
+    }
+
+    fn prepare_branch_update(&self, branch: &str) -> Result<crate::backend::BranchUpdate> {
+        self.prepare_branch_update_impl(branch)
+    }
+
+    fn update_branch(&self, plan: &crate::backend::BranchUpdate, reset: bool) -> Result<()> {
+        self.update_branch_impl(plan, reset)
     }
 
     fn remotes(&self) -> Result<Vec<String>> {
