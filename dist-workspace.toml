@@ -17,3 +17,7 @@ install-path = "~/.local/bin"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+
+# Keep the Apple Silicon build on GitHub's supported standard macOS runner label.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-14"
