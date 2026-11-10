@@ -20,4 +20,4 @@ install-updater = false
 
 # Keep the Apple Silicon build on GitHub's supported standard macOS runner label.
 [dist.github-custom-runners]
-aarch64-apple-darwin = "macos-14"
+aarch64-apple-darwin = "macos-15"
