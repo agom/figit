@@ -937,7 +937,7 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
 #[test]
 fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
     let repository = init_hunk_staging_repository();
-    let mut tui = Tui::launch(repository.path());
+    let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);
     tui.wait_for("file.txt");
     tui.wait_for("2/2");
     tui.send(b"h");
@@ -1156,12 +1156,12 @@ fn line_mode_discards_only_the_selected_added_line() {
 #[test]
 fn line_mode_stages_only_the_selected_added_line() {
     let repository = init_hunk_staging_repository();
-    let mut tui = Tui::launch(repository.path());
+    let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);
     tui.wait_for("2/2");
 
     tui.send(b"l");
     tui.wait_for("line selection");
-    assert!(tui.contents().contains("f file • h hunk • l line"));
+    tui.wait_for("f file • h hunk • l line");
     tui.send(b"f");
     tui.wait_for_text_background("+first ours", vt100::Color::Rgb(38, 56, 43));
     tui.send(b"l");
