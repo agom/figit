@@ -12,6 +12,15 @@ pub enum PullStrategy {
     Merge,
 }
 
+/// Diff text for viewing and for applying hunk-level operations. In full-file
+/// context mode the view includes unchanged file lines, while the patch keeps
+/// the regular hunk boundaries used by stage/unstage actions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffPresentation {
+    pub display: String,
+    pub patch: String,
+}
+
 /// Local state approved before fetching; stale confirmations must not move a ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchUpdate {
@@ -41,6 +50,12 @@ pub trait GitBackend {
     /// Use an already loaded status entry rather than rescanning the repository
     /// to discover a possible rename source while navigating files.
     fn diff_entry(&self, entry: &StatusEntry, target: DiffTarget) -> anyhow::Result<String>;
+    fn diff_entry_presentation(
+        &self,
+        entry: &StatusEntry,
+        target: DiffTarget,
+        full_file_context: bool,
+    ) -> anyhow::Result<DiffPresentation>;
     fn diff_hunk_counts(&self, path: &GitPath) -> anyhow::Result<(usize, usize)>;
     /// Staged and worktree hunk counts for many paths at once. Batching keeps
     /// the refresh from spawning a handful of `git` processes per file.
@@ -85,6 +100,12 @@ pub trait GitBackend {
     fn stash_drop(&self, reference: &str) -> anyhow::Result<()>;
     fn commit_files(&self, commit: &str) -> anyhow::Result<Vec<StatusEntry>>;
     fn commit_diff(&self, commit: &str, path: &GitPath) -> anyhow::Result<String>;
+    fn commit_diff_presentation(
+        &self,
+        commit: &str,
+        path: &GitPath,
+        full_file_context: bool,
+    ) -> anyhow::Result<DiffPresentation>;
     fn commit_diff_stats(&self, commit: &str) -> anyhow::Result<Vec<(GitPath, usize, usize)>>;
     fn commit(
         &self,

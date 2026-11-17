@@ -259,18 +259,18 @@ fn panel_hints_describe_available_file_and_diff_actions() {
     app.status_section = StatusSection::Unstaged;
     app.ensure_status_selection();
     app.focus = Focus::Diff;
-    assert_eq!(app.panel_actions()[0], ("Space", "stage file"));
+    assert!(app.panel_actions().contains(&("Space", "stage file")));
     app.set_diff_lines(parse_diff("@@ -1 +1 @@\n-old\n+new\n"));
     app.toggle_hunk_mode();
-    assert_eq!(app.panel_actions()[0], ("Space", "stage hunk"));
+    assert!(app.panel_actions().contains(&("Space", "stage hunk")));
     app.focus = Focus::Status;
     assert_eq!(app.panel_actions()[0], ("F", "stage file"));
     app.focus = Focus::Diff;
     app.toggle_line_mode();
-    assert_eq!(app.panel_actions()[0], ("Space", "stage line"));
-    assert!(app.panel_actions().contains(&("f", "file mode")));
+    assert!(app.panel_actions().contains(&("Space", "stage line")));
+    assert!(app.panel_actions().contains(&("f", "file")));
     app.diff_target = DiffTarget::Index;
-    assert_eq!(app.panel_actions()[0], ("Space", "unstage line"));
+    assert!(app.panel_actions().contains(&("Space", "unstage line")));
 
     app.historical_commit = Some("m".into());
     assert!(!app
@@ -316,6 +316,36 @@ fn panel_hints_describe_available_file_and_diff_actions() {
 }
 
 #[test]
+fn full_file_context_is_available_in_the_diff_commands_and_persists() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Diff;
+    let command = app
+        .panel_commands()
+        .into_iter()
+        .find(|command| command.id == CommandId::FullFileContext)
+        .expect("diff panel should offer full-file context");
+    assert_eq!(command.key, "C");
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('C')));
+    assert!(app.full_file_context);
+    app.selected_status = 1;
+    app.refresh_diff();
+    assert!(
+        app.full_file_context,
+        "context preference should persist by file"
+    );
+}
+
+#[test]
+fn diff_panel_title_shows_the_full_context_shortcut() {
+    let mut app = shortcut_test_app();
+    app.focus = Focus::Diff;
+    app.maximized = true;
+    let screen = render_full_app(&mut app, 100, 12);
+    assert!(screen.contains("Diff · C context"));
+}
+
+#[test]
 fn diff_selection_modes_use_jk_and_arrows_without_shortcut_collisions() {
     let mut app = shortcut_test_app();
     app.focus = Focus::Diff;
@@ -353,7 +383,15 @@ fn panel_hints_omit_unavailable_actions_and_prioritize_truncated_diffs() {
     let mut app = shortcut_test_app();
     app.focus = Focus::Diff;
     app.diff_truncated = Some((20_000, 30_000));
-    assert_eq!(app.panel_actions()[0], ("L", "load full diff"));
+    assert_eq!(
+        &app.panel_actions()[..4],
+        &[
+            ("f", "file"),
+            ("h", "hunk"),
+            ("l", "line"),
+            ("L", "load full diff")
+        ]
+    );
     app.remote_operation = Some(RemoteOperation::Fetch("origin".into()));
     assert_eq!(app.panel_actions(), vec![("[/]", "hunk")]);
     app.remote_operation = None;
@@ -446,7 +484,7 @@ fn panel_hints_fit_whole_items_beside_diff_metadata() {
             assert!(footer.contains("[/] hunk"), "{width}: {footer}");
         }
         if footer.contains("h hun") {
-            assert!(footer.contains("h hunks"), "{width}: {footer}");
+            assert!(footer.contains("h hunk"), "{width}: {footer}");
         }
     }
     app.panel_hints_visible = false;
@@ -480,6 +518,33 @@ fn panel_hints_keys_remain_distinct_across_terminal_themes() {
             assert_eq!(description.fg, Color::Reset);
         } else {
             assert_ne!(key.fg, description.fg);
+        }
+
+        app.focus = Focus::Diff;
+        app.maximized = true;
+        for (hunk_mode, line_mode, active) in [
+            (false, false, "file"),
+            (true, false, "hunk"),
+            (false, true, "line"),
+        ] {
+            app.hunk_mode = hunk_mode;
+            app.line_mode = line_mode;
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let y = app.diff_area.bottom() - 1;
+            let footer = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>();
+            for label in ["file", "hunk", "line"] {
+                let offset = footer.find(label).expect("all mode hints should fit");
+                let x = footer[..offset].chars().count() as u16;
+                let cell = &buffer[(x, y)];
+                assert_eq!(cell.modifier.contains(Modifier::BOLD), label == active);
+                if !no_color {
+                    let active_x = footer[..footer.find(active).unwrap()].chars().count() as u16;
+                    assert_eq!(cell.fg == buffer[(active_x, y)].fg, label == active);
+                }
+            }
         }
     }
 }
@@ -1357,6 +1422,69 @@ fn renders_graph_rows_with_lane_glyphs_and_labels() {
     assert!(text[2].ends_with(&column_tail(&app, r)), "{}", text[2]);
     assert!(text[3].starts_with(&format!("●─╯ {PILL_LEFT} {TAG_GLYPH} v1 {PILL_RIGHT} base")));
     assert!(text[3].ends_with(&column_tail(&app, b)), "{}", text[3]);
+}
+
+#[test]
+fn graph_ref_pills_wrap_and_keep_late_tags_visible() {
+    let mut graph = synthetic_graph();
+    for index in 0..5 {
+        graph.refs.push(RefLabel {
+            kind: RefKind::LocalBranch,
+            name: format!("topic/branch-{index}"),
+            id: "m".into(),
+        });
+    }
+    graph.refs.push(RefLabel {
+        kind: RefKind::Tag,
+        name: "tag-release".into(),
+        id: "m".into(),
+    });
+    let mut app = App::new(graph, Vec::new(), None);
+    app.ensure_graph_visual_layout(34);
+
+    assert!(app.graph_visual_line_total() > app.rows.len());
+    assert_eq!(app.graph_visual_selection_at(1), Some(0));
+    let row = &app.rows[0];
+    let mut rendered = app.render_row(row, 34).to_string();
+    for continuation in 0..app.graph_visual_offsets[1].saturating_sub(1) {
+        rendered.push_str(
+            &app.render_row_continuation(row, 0, 34, continuation)
+                .to_string(),
+        );
+    }
+    assert!(rendered.contains("tag-release"), "{rendered:?}");
+    for index in 0..5 {
+        assert!(rendered.contains(&format!("topic/branch-{index}")));
+    }
+
+    app.graph_area = Rect::new(0, 0, 36, 10);
+    app.scroll_y = 1;
+    app.handle_mouse(2, 1);
+    assert_eq!(
+        app.selected_graph, 0,
+        "clicking a wrapped ref selects its commit"
+    );
+}
+
+#[test]
+fn full_file_context_maps_compact_hunks_to_display_changes() {
+    let mut app = App::new(synthetic_graph(), Vec::new(), None);
+    let compact = "@@ -1,2 +1,2 @@\n before\n-old one\n+new one\n@@ -20,2 +20,2 @@\n before\n-old two\n+new two\n";
+    let full = "@@ -1,2 +1,2 @@\n before\n-old one\n+new one\n middle context\n@@ -20,2 +20,2 @@\n before\n-old two\n+new two\n";
+    app.full_file_context = true;
+    app.apply_diff_presentation(DiffPresentation {
+        display: full.into(),
+        patch: compact.into(),
+    });
+
+    assert_eq!(app.hunk_header_indices.len(), 2);
+    assert_eq!(app.hunk_display_changes.len(), 2);
+    assert!(app.hunk_display_changes[0]
+        .iter()
+        .any(|index| app.diff_lines[*index].text.contains("new one")));
+    assert!(app.hunk_display_changes[1]
+        .iter()
+        .any(|index| app.diff_lines[*index].text.contains("new two")));
 }
 
 #[test]
@@ -3923,8 +4051,12 @@ fn diff_worker_keeps_only_latest_pending_selection_and_ignores_stale_results() {
         started.send(request.entry.path.clone()).unwrap();
         release_rx.recv().unwrap();
         loaded.send(request.entry.path.clone()).unwrap();
+        let diff = format!("@@ -1 +1 @@\n-old\n+{}\n", request.entry.path.display());
         Ok((
-            format!("@@ -1 +1 @@\n-old\n+{}\n", request.entry.path.display()),
+            DiffPresentation {
+                display: diff.clone(),
+                patch: diff,
+            },
             1,
         ))
     }));

@@ -14,26 +14,36 @@ impl App {
     /// the rendered-line cache) in sync. Always go through this rather than
     /// assigning `diff_lines` directly.
     pub(super) fn set_diff_lines(&mut self, lines: Vec<DiffLine>) {
-        self.hunk_header_indices = diff_hunk_headers(&lines);
-        self.diff_lines = lines;
+        self.set_diff_content(lines.clone(), lines);
+    }
+
+    fn set_diff_content(&mut self, display: Vec<DiffLine>, patch: Vec<DiffLine>) {
+        self.hunk_header_indices = diff_hunk_headers(&patch);
+        self.hunk_display_changes = map_hunk_changes(&display, &patch, &self.hunk_header_indices);
+        self.diff_lines = display;
+        self.diff_patch_lines = patch;
         self.diff_cache = None;
     }
 
     pub(super) fn apply_diff_text(&mut self, diff: String) {
-        let total = diff.lines().count();
+        self.apply_diff_presentation(DiffPresentation {
+            display: diff.clone(),
+            patch: diff,
+        });
+    }
+
+    pub(super) fn apply_diff_presentation(&mut self, presentation: DiffPresentation) {
+        let total = presentation.display.lines().count();
+        let mut display_text = presentation.display;
+        let mut patch_text = presentation.patch;
         if !self.diff_full && total > MAX_RENDERED_DIFF_LINES {
-            let mut text = diff
-                .lines()
-                .take(MAX_RENDERED_DIFF_LINES)
-                .collect::<Vec<_>>()
-                .join("\n");
-            text.push('\n');
-            self.set_diff_lines(parse_diff(&text));
+            display_text = take_diff_lines(&display_text, MAX_RENDERED_DIFF_LINES);
+            patch_text = take_diff_lines(&patch_text, MAX_RENDERED_DIFF_LINES);
             self.diff_truncated = Some((MAX_RENDERED_DIFF_LINES, total));
         } else {
-            self.set_diff_lines(parse_diff(&diff));
             self.diff_truncated = None;
         }
+        self.set_diff_content(parse_diff(&display_text), parse_diff(&patch_text));
     }
 
     pub(super) fn load_full_diff(&mut self) {
@@ -100,6 +110,7 @@ impl App {
                     entry: entry.clone(),
                     target: self.diff_target,
                     commit: self.historical_commit.clone(),
+                    full_file_context: self.full_file_context,
                 });
                 if previous_path != self.diff_path || previous_target != self.diff_target {
                     self.set_diff_lines(Vec::new());
@@ -129,8 +140,16 @@ impl App {
                 self.backend
                     .as_ref()
                     .map(|backend| match &self.historical_commit {
-                        Some(commit) => backend.commit_diff(commit, &entry.path),
-                        None => backend.diff_entry(entry, self.diff_target),
+                        Some(commit) => backend.commit_diff_presentation(
+                            commit,
+                            &entry.path,
+                            self.full_file_context,
+                        ),
+                        None => backend.diff_entry_presentation(
+                            entry,
+                            self.diff_target,
+                            self.full_file_context,
+                        ),
                     })
             })
             .transpose()
@@ -142,14 +161,21 @@ impl App {
             }
             Ok(None) => {
                 self.diff_error = None;
-                String::new()
+                DiffPresentation {
+                    display: String::new(),
+                    patch: String::new(),
+                }
             }
             Err(error) => {
                 self.diff_error = Some(error.clone());
-                format!("\\ Could not load diff: {error}\n")
+                let message = format!("\\ Could not load diff: {error}\n");
+                DiffPresentation {
+                    display: message.clone(),
+                    patch: message,
+                }
             }
         };
-        self.apply_diff_text(diff);
+        self.apply_diff_presentation(diff);
         self.selected_diff_hunk = self
             .selected_diff_hunk
             .min(self.hunk_header_indices.len().saturating_sub(1));
@@ -235,6 +261,7 @@ impl App {
         if self.diff_path.as_ref() != Some(&request.entry.path)
             || self.diff_target != request.target
             || self.historical_commit != request.commit
+            || self.full_file_context != request.full_file_context
         {
             return;
         }
@@ -243,7 +270,7 @@ impl App {
             Ok((diff, width)) => {
                 self.diff_number_width = width;
                 self.diff_error = None;
-                self.apply_diff_text(diff);
+                self.apply_diff_presentation(diff);
             }
             Err(error) => {
                 self.diff_error = Some(error.clone());
@@ -305,7 +332,7 @@ impl App {
             .hunk_header_indices
             .get(self.selected_diff_hunk + 1)
             .copied()
-            .unwrap_or(self.diff_lines.len());
+            .unwrap_or(self.diff_patch_lines.len());
         Some((start, end))
     }
 
@@ -343,7 +370,19 @@ impl App {
                     }
                 }
             } else if self.hunk_mode {
-                if let Some((start, end)) = self.selected_hunk_range() {
+                if self.full_file_context {
+                    if let Some(changes) = self.hunk_display_changes.get(self.selected_diff_hunk) {
+                        let selected_change = [old, new]
+                            .into_iter()
+                            .flatten()
+                            .find(|index| changes.contains(index));
+                        if selected_change.is_some() {
+                            emphasize_selected_diff_hunk(&mut line);
+                        }
+                        selected_marker = selected_change
+                            .is_some_and(|index| changes.iter().min().copied() == Some(index));
+                    }
+                } else if let Some((start, end)) = self.selected_hunk_range() {
                     let in_hunk = [old, new]
                         .into_iter()
                         .flatten()
@@ -369,4 +408,47 @@ impl App {
         pad_colored_lines(std::slice::from_mut(&mut line), width);
         line
     }
+}
+
+fn take_diff_lines(diff: &str, limit: usize) -> String {
+    let mut text = diff.lines().take(limit).collect::<Vec<_>>().join("\n");
+    text.push('\n');
+    text
+}
+
+fn map_hunk_changes(
+    display: &[DiffLine],
+    patch: &[DiffLine],
+    patch_headers: &[usize],
+) -> Vec<HashSet<usize>> {
+    let mut display_lines: HashMap<(DiffKind, Option<u32>, Option<u32>), Vec<usize>> =
+        HashMap::new();
+    for (index, line) in display.iter().enumerate() {
+        if matches!(line.kind, DiffKind::Added | DiffKind::Removed) {
+            display_lines
+                .entry((line.kind, line.old_no, line.new_no))
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut hunks = Vec::with_capacity(patch_headers.len());
+    for (hunk_index, &header) in patch_headers.iter().enumerate() {
+        let end = patch_headers
+            .get(hunk_index + 1)
+            .copied()
+            .unwrap_or(patch.len());
+        let mut changes = HashSet::new();
+        for line in &patch[header + 1..end] {
+            if !matches!(line.kind, DiffKind::Added | DiffKind::Removed) {
+                continue;
+            }
+            if let Some(indices) = display_lines.get_mut(&(line.kind, line.old_no, line.new_no)) {
+                if !indices.is_empty() {
+                    changes.insert(indices.remove(0));
+                }
+            }
+        }
+        hunks.push(changes);
+    }
+    hunks
 }

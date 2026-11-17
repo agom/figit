@@ -733,7 +733,11 @@ impl App {
 
     /// The rendered row index of hunk `hunk`'s `@@` header.
     fn hunk_header_row(&self, hunk: usize) -> Option<usize> {
-        let target = *self.hunk_header_indices.get(hunk)?;
+        let target = if self.full_file_context {
+            *self.hunk_display_changes.get(hunk)?.iter().min()?
+        } else {
+            *self.hunk_header_indices.get(hunk)?
+        };
         let rows = &self.diff_cache.as_ref()?.1;
         rows.iter().position(|row| {
             let (old, new) = row.input_indices();

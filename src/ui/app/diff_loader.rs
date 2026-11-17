@@ -10,11 +10,12 @@ pub(super) struct DiffRequest {
     pub entry: StatusEntry,
     pub target: DiffTarget,
     pub commit: Option<String>,
+    pub full_file_context: bool,
 }
 
 pub(super) struct DiffCompletion {
     pub request: DiffRequest,
-    pub result: std::result::Result<(String, usize), String>,
+    pub result: std::result::Result<(DiffPresentation, usize), String>,
 }
 
 pub(super) struct DiffLoader {
@@ -29,8 +30,16 @@ impl DiffLoader {
             (|| -> anyhow::Result<_> {
                 let backend = crate::backend::open(&request.repository)?;
                 let diff = match request.commit.as_deref() {
-                    Some(commit) => backend.commit_diff(commit, &request.entry.path)?,
-                    None => backend.diff_entry(&request.entry, request.target)?,
+                    Some(commit) => backend.commit_diff_presentation(
+                        commit,
+                        &request.entry.path,
+                        request.full_file_context,
+                    )?,
+                    None => backend.diff_entry_presentation(
+                        &request.entry,
+                        request.target,
+                        request.full_file_context,
+                    )?,
                 };
                 let width = backend
                     .file_line_number_width(&request.entry.path, request.commit.as_deref())
@@ -43,7 +52,9 @@ impl DiffLoader {
 
     pub(super) fn with_reader<F>(read: F) -> Self
     where
-        F: Fn(&DiffRequest) -> std::result::Result<(String, usize), String> + Send + 'static,
+        F: Fn(&DiffRequest) -> std::result::Result<(DiffPresentation, usize), String>
+            + Send
+            + 'static,
     {
         let pending = Arc::new(Mutex::new(None::<DiffRequest>));
         let completed = Arc::new(Mutex::new(None));

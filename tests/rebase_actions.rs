@@ -1975,6 +1975,73 @@ fn commit_diff_stats_batch_reports_every_changed_path() {
 }
 
 #[test]
+fn full_file_diff_context_covers_worktree_index_and_history() {
+    let temp = tempfile::tempdir().expect("create repository");
+    let path = temp.path();
+    git_ok(path, &["init", "--quiet", "--initial-branch=main"]);
+    configure_user(path);
+    let original = (1..=40)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(path.join("file.txt"), &original).unwrap();
+    git_ok(path, &["add", "file.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "base"]);
+
+    let changed = original
+        .replace("line 2\n", "changed 2\n")
+        .replace("line 38\n", "changed 38\n");
+    std::fs::write(path.join("file.txt"), changed).unwrap();
+    let backend = backend::open(path).unwrap();
+    let path_in_repo = GitPath::from("file.txt");
+    let entry = backend
+        .status()
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.path == path_in_repo)
+        .unwrap();
+    let worktree = backend
+        .diff_entry_presentation(&entry, DiffTarget::Worktree, true)
+        .unwrap();
+    assert!(worktree.display.contains("line 20"));
+    assert!(!worktree.patch.contains("line 20"));
+    assert_eq!(worktree.patch.matches("@@").count(), 4);
+
+    backend
+        .apply_hunk(&path_in_repo, DiffTarget::Worktree, 0)
+        .unwrap();
+    let entry = backend
+        .status()
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.path == path_in_repo)
+        .unwrap();
+    let staged = backend
+        .diff_entry_presentation(&entry, DiffTarget::Index, true)
+        .unwrap();
+    assert!(staged.display.contains("line 20"));
+    assert!(!staged.patch.contains("line 20"));
+    assert!(staged.display.contains("changed 2"));
+    assert!(!staged.display.contains("changed 38"));
+    assert!(staged.patch.contains("+changed 2"));
+    assert!(!staged.patch.contains("+changed 38"));
+    let remaining = backend
+        .diff_entry_presentation(&entry, DiffTarget::Worktree, true)
+        .unwrap();
+    assert!(remaining.display.contains("changed 38"));
+    assert!(!remaining.patch.contains("+changed 2"));
+    assert!(remaining.patch.contains("+changed 38"));
+
+    git_ok(path, &["add", "file.txt"]);
+    git_ok(path, &["commit", "--quiet", "-m", "change distant lines"]);
+    let commit = git_ok(path, &["rev-parse", "HEAD"]);
+    let historical = backend
+        .commit_diff_presentation(&commit, &path_in_repo, true)
+        .unwrap();
+    assert!(historical.display.contains("line 20"));
+    assert!(!historical.patch.contains("line 20"));
+}
+
+#[test]
 fn merge_commit_files_diff_and_stats_compare_against_first_parent() {
     let (temp, merge_commit) = merge_repository();
     let backend = backend::open(temp.path()).expect("open merge repository");

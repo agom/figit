@@ -9,9 +9,9 @@ use anyhow::{Context, Result};
 use similar::{DiffTag, TextDiff};
 
 use crate::backend::{
-    ConflictResolution, ConflictSide, ConflictVersions, DiffLineSelection, DiffTarget, GitBackend,
-    GraphWindow, PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan, RebasePlanBlock,
-    RebasePlanEntry, RebaseTodoAction, UndoInfo,
+    ConflictResolution, ConflictSide, ConflictVersions, DiffLineSelection, DiffPresentation,
+    DiffTarget, GitBackend, GraphWindow, PathDiffStats, RebaseAction, RebaseOutcome, RebasePlan,
+    RebasePlanBlock, RebasePlanEntry, RebaseTodoAction, UndoInfo,
 };
 use crate::core::model::{
     BranchTracking, Commit, GitPath, GraphModel, Oid, RefKind, RefLabel, StatusEntry,
@@ -26,6 +26,9 @@ mod helpers;
 #[path = "gix/remote.rs"]
 mod remote;
 use helpers::*;
+
+const DEFAULT_DIFF_CONTEXT_LINES: usize = 3;
+const FULL_FILE_DIFF_CONTEXT_LINES: usize = 2_147_483_647;
 
 /// Git's documented fallback for `core.bigFileThreshold`.
 const GIT_DEFAULT_BIG_FILE_THRESHOLD: u64 = 512 * 1024 * 1024;
@@ -287,13 +290,18 @@ impl GixBackend {
     /// all-added diff against `/dev/null`. `--no-index` exits 1 when the files
     /// differ, which is the expected case here.
     fn untracked_diff(&self, path: &GitPath) -> Result<String> {
+        self.untracked_diff_with_context(path, DEFAULT_DIFF_CONTEXT_LINES)
+    }
+
+    fn untracked_diff_with_context(&self, path: &GitPath, context_lines: usize) -> Result<String> {
+        let unified = format!("--unified={context_lines}");
         let output = git_output_with_path(
             &self.workdir,
             &[
                 "diff",
                 "--no-index",
                 "--no-color",
-                "--unified=3",
+                &unified,
                 "--",
                 "/dev/null",
             ],
@@ -773,6 +781,7 @@ impl GixBackend {
         path: &GitPath,
         target: DiffTarget,
         paths: &[GitPath],
+        context_lines: usize,
     ) -> Result<String> {
         let unmerged =
             git_output_with_path_checked(&self.workdir, &["ls-files", "-u", "-z", "--"], path)?;
@@ -801,17 +810,18 @@ impl GixBackend {
             if self.worktree_is_too_large(path) {
                 return Ok(too_large_diff_notice(path, self.diff_size_limit()));
             }
-            return self.untracked_diff(path);
+            return self.untracked_diff_with_context(path, context_lines);
         }
         if self.diff_is_too_large(path, target) {
             return Ok(too_large_diff_notice(path, self.diff_size_limit()));
         }
+        let unified = format!("--unified={context_lines}");
         let mut args = vec![
             "--no-optional-locks",
             "diff",
             "--no-ext-diff",
             "--no-color",
-            "--unified=3",
+            unified.as_str(),
             "--find-renames",
         ];
         if target == DiffTarget::Index {
@@ -829,6 +839,90 @@ impl GixBackend {
         if !output.status.success() {
             anyhow::bail!(
                 "git diff failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    fn diff_entry_with_context(
+        &self,
+        entry: &StatusEntry,
+        target: DiffTarget,
+        context_lines: usize,
+    ) -> Result<String> {
+        let mut paths = vec![entry.path.clone()];
+        let code = if target == DiffTarget::Index {
+            entry.index
+        } else {
+            entry.worktree
+        };
+        if matches!(code, 'R' | 'C') {
+            paths.extend(entry.original_path.clone());
+        }
+        self.diff_with_paths(&entry.path, target, &paths, context_lines)
+    }
+
+    fn commit_diff_with_context(
+        &self,
+        commit: &str,
+        path: &GitPath,
+        context_lines: usize,
+    ) -> Result<String> {
+        let parents = self.commit_parents(commit)?;
+        if self.commit_path_is_too_large(commit, path, &parents) {
+            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+        }
+        let mut paths = vec![path.clone()];
+        if let Some(entry) = self
+            .commit_files(commit)?
+            .into_iter()
+            .find(|entry| &entry.path == path)
+        {
+            paths.extend(entry.original_path);
+        }
+        if paths
+            .iter()
+            .skip(1)
+            .any(|path| self.commit_path_is_too_large(commit, path, &parents))
+        {
+            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
+        }
+        let unified = format!("--unified={context_lines}");
+        let output = if parents.len() > 1 {
+            git_output_with_paths(
+                &self.workdir,
+                &[
+                    "diff",
+                    "--no-ext-diff",
+                    "--find-renames",
+                    unified.as_str(),
+                    parents[0].as_str(),
+                    commit,
+                    "--",
+                ],
+                &paths,
+            )
+            .with_context(|| "run first-parent merge diff")?
+        } else {
+            git_output_with_paths(
+                &self.workdir,
+                &[
+                    "show",
+                    "--format=",
+                    "--no-ext-diff",
+                    "--find-renames",
+                    unified.as_str(),
+                    commit,
+                    "--",
+                ],
+                &paths,
+            )
+            .with_context(|| "run git show")?
+        };
+        if !output.status.success() {
+            anyhow::bail!(
+                "git commit diff failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -993,20 +1087,26 @@ impl super::GitBackend for GixBackend {
 
     fn diff(&self, path: &GitPath, target: DiffTarget) -> Result<String> {
         let paths = self.status_paths(path, target)?;
-        self.diff_with_paths(path, target, &paths)
+        self.diff_with_paths(path, target, &paths, DEFAULT_DIFF_CONTEXT_LINES)
     }
 
     fn diff_entry(&self, entry: &StatusEntry, target: DiffTarget) -> Result<String> {
-        let mut paths = vec![entry.path.clone()];
-        let code = if target == DiffTarget::Index {
-            entry.index
+        self.diff_entry_with_context(entry, target, DEFAULT_DIFF_CONTEXT_LINES)
+    }
+
+    fn diff_entry_presentation(
+        &self,
+        entry: &StatusEntry,
+        target: DiffTarget,
+        full_file_context: bool,
+    ) -> Result<DiffPresentation> {
+        let patch = self.diff_entry_with_context(entry, target, DEFAULT_DIFF_CONTEXT_LINES)?;
+        let display = if full_file_context {
+            self.diff_entry_with_context(entry, target, FULL_FILE_DIFF_CONTEXT_LINES)?
         } else {
-            entry.worktree
+            patch.clone()
         };
-        if matches!(code, 'R' | 'C') {
-            paths.extend(entry.original_path.clone());
-        }
-        self.diff_with_paths(&entry.path, target, &paths)
+        Ok(DiffPresentation { display, patch })
     }
 
     fn diff_hunk_counts(&self, path: &GitPath) -> Result<(usize, usize)> {
@@ -1640,61 +1740,22 @@ impl super::GitBackend for GixBackend {
     }
 
     fn commit_diff(&self, commit: &str, path: &GitPath) -> Result<String> {
-        let parents = self.commit_parents(commit)?;
-        if self.commit_path_is_too_large(commit, path, &parents) {
-            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
-        }
-        let mut paths = vec![path.clone()];
-        if let Some(entry) = self
-            .commit_files(commit)?
-            .into_iter()
-            .find(|entry| &entry.path == path)
-        {
-            paths.extend(entry.original_path);
-        }
-        if paths
-            .iter()
-            .skip(1)
-            .any(|path| self.commit_path_is_too_large(commit, path, &parents))
-        {
-            return Ok(too_large_diff_notice(path, self.diff_size_limit()));
-        }
-        let output = if parents.len() > 1 {
-            git_output_with_paths(
-                &self.workdir,
-                &[
-                    "diff",
-                    "--no-ext-diff",
-                    "--find-renames",
-                    parents[0].as_str(),
-                    commit,
-                    "--",
-                ],
-                &paths,
-            )
-            .with_context(|| "run first-parent merge diff")?
+        self.commit_diff_with_context(commit, path, DEFAULT_DIFF_CONTEXT_LINES)
+    }
+
+    fn commit_diff_presentation(
+        &self,
+        commit: &str,
+        path: &GitPath,
+        full_file_context: bool,
+    ) -> Result<DiffPresentation> {
+        let patch = self.commit_diff_with_context(commit, path, DEFAULT_DIFF_CONTEXT_LINES)?;
+        let display = if full_file_context {
+            self.commit_diff_with_context(commit, path, FULL_FILE_DIFF_CONTEXT_LINES)?
         } else {
-            git_output_with_paths(
-                &self.workdir,
-                &[
-                    "show",
-                    "--format=",
-                    "--no-ext-diff",
-                    "--find-renames",
-                    commit,
-                    "--",
-                ],
-                &paths,
-            )
-            .with_context(|| "run git show")?
+            patch.clone()
         };
-        if !output.status.success() {
-            anyhow::bail!(
-                "git commit diff failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(DiffPresentation { display, patch })
     }
 
     fn commit_diff_stats(&self, commit: &str) -> Result<Vec<(GitPath, usize, usize)>> {
