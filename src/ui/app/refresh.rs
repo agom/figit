@@ -90,7 +90,7 @@ impl App {
                     let scroll = (self.scroll_y, self.scroll_x);
                     self.reload_external_snapshot(snapshot);
                     if self.refresh.preserve_scroll && !initial_load {
-                        self.scroll_y = scroll.0.min(self.rows.len().saturating_sub(1));
+                        self.scroll_y = scroll.0;
                         self.scroll_x = scroll.1;
                         self.scroll_to_selected_graph = false;
                     }
@@ -234,6 +234,11 @@ impl App {
             if self.historical_commit.as_deref() != Some(completion.commit_id.as_str()) {
                 continue;
             }
+            if self.full_file_context != completion.full_file_context {
+                self.details_loading = false;
+                self.graph_details_deadline = Some(Instant::now() + Duration::from_millis(80));
+                continue;
+            }
             match completion.result {
                 Ok(details) => {
                     self.status = details.files;
@@ -258,11 +263,11 @@ impl App {
                         self.diff_number_width = number_width;
                         self.diff_full = false;
                         self.diff_truncated = None;
-                        self.apply_diff_text(diff);
+                        self.apply_diff_presentation(diff);
                     } else {
                         self.diff_path = None;
                         self.diff_number_width = 3;
-                        self.diff_lines.clear();
+                        self.set_diff_lines(Vec::new());
                     }
                     self.selected_diff_hunk = 0;
                     self.selected_diff_line = None;
@@ -301,6 +306,7 @@ impl App {
         let Some(path) = self.repository_path.clone() else {
             return;
         };
+        let full_file_context = self.full_file_context;
         let sender = self.graph_details_tx.clone();
         self.graph_details_in_progress = true;
         thread::spawn(move || {
@@ -311,7 +317,11 @@ impl App {
                 let diff = if let Some(file) = files.first() {
                     Some((
                         file.path.clone(),
-                        backend.commit_diff(&commit_id, &file.path)?,
+                        backend.commit_diff_presentation(
+                            &commit_id,
+                            &file.path,
+                            full_file_context,
+                        )?,
                         backend.file_line_number_width(&file.path, Some(&commit_id))?,
                     ))
                 } else {
@@ -320,7 +330,11 @@ impl App {
                 Ok(HistoricalCommitDetails { files, stats, diff })
             })()
             .map_err(|error| format!("{error:#}"));
-            let _ = sender.send(GraphDetailsCompletion { commit_id, result });
+            let _ = sender.send(GraphDetailsCompletion {
+                commit_id,
+                full_file_context,
+                result,
+            });
         });
     }
 
@@ -409,6 +423,8 @@ impl App {
             None
         };
         self.active_conflict_paths = conflict_paths(&local_status);
+        self.graph_visual_width = None;
+        self.graph_visual_offsets.clear();
         self.graph = graph;
         self.graph_display_refs = graph_display_refs;
         self.tracking_by_branch = tracking_by_branch;
@@ -600,6 +616,7 @@ pub(super) struct RepositorySnapshot {
 
 pub(super) struct GraphDetailsCompletion {
     pub(super) commit_id: String,
+    pub(super) full_file_context: bool,
     pub(super) result: std::result::Result<HistoricalCommitDetails, String>,
 }
 
@@ -617,7 +634,7 @@ pub(super) struct DiffStatsSnapshot {
 pub(super) struct HistoricalCommitDetails {
     pub(super) files: Vec<StatusEntry>,
     pub(super) stats: Vec<(GitPath, usize, usize)>,
-    pub(super) diff: Option<(GitPath, String, usize)>,
+    pub(super) diff: Option<(GitPath, DiffPresentation, usize)>,
 }
 
 /// Commits loaded per history page. The first page renders immediately and

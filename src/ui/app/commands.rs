@@ -28,6 +28,7 @@ pub(super) enum CommandId {
     HunkMode,
     LineMode,
     DiffMode,
+    FullFileContext,
     PreviousHunk,
     NextHunk,
     LoadFull,
@@ -385,7 +386,7 @@ impl App {
                         && self.diff_path.is_some()
                         && !self.details_loading
                     {
-                        if self.hunk_mode || self.line_mode {
+                        if self.focus == Focus::Diff || self.hunk_mode || self.line_mode {
                             add(FileMode, "Use file selection mode", "f", "whole file");
                         }
                         if hunks || self.diff_loading {
@@ -418,6 +419,16 @@ impl App {
                         && !self.details_loading
                         && !self.diff_loading
                     {
+                        add(
+                            FullFileContext,
+                            if self.full_file_context {
+                                "Show compact diff"
+                            } else {
+                                "Show full-file context"
+                            },
+                            "C",
+                            "context|whole file|unchanged lines",
+                        );
                         if !historical
                             && self.diff_target == DiffTarget::Worktree
                             && (self.hunk_mode || self.line_mode)
@@ -621,6 +632,13 @@ impl App {
                 };
                 self.diff_scroll = 0;
                 self.diff_scroll_x = 0;
+            }
+            FullFileContext => {
+                self.full_file_context = !self.full_file_context;
+                self.diff_scroll = 0;
+                self.diff_scroll_x = 0;
+                self.refresh_diff();
+                self.focus = Focus::Diff;
             }
             PreviousHunk | NextHunk => {
                 let delta = if id == PreviousHunk { -1 } else { 1 };

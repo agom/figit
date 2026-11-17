@@ -930,6 +930,9 @@ impl App {
             KeyCode::Char('v') if !self.line_mode => {
                 self.execute_panel_command(CommandId::DiffMode);
             }
+            KeyCode::Char('C') if self.focus == Focus::Diff && self.three_way_view.is_none() => {
+                self.execute_panel_command(CommandId::FullFileContext);
+            }
             KeyCode::Char('h')
                 if matches!(self.focus, Focus::Status | Focus::Diff)
                     && self.three_way_view.is_none() =>
@@ -1120,9 +1123,9 @@ impl App {
         if self.graph_area.contains(position) {
             self.focus = Focus::Graph;
             let row = y.saturating_sub(self.graph_area.y + 1) as usize;
-            let total = self.rows.len() + usize::from(!self.local_status.is_empty());
-            let index = self.scroll_y + row;
-            if index < total {
+            self.ensure_graph_visual_layout(self.graph_area.width.saturating_sub(2) as usize);
+            let visual_index = self.scroll_y + row;
+            if let Some(index) = self.graph_visual_selection_at(visual_index) {
                 self.select_graph_index(index);
             }
             return;

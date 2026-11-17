@@ -31,6 +31,7 @@ pub(super) fn current_branch_ids(graph: &GraphModel) -> HashSet<String> {
 
 impl App {
     pub(super) fn rebuild_graph_indexes(&mut self) {
+        self.invalidate_graph_visual_layout();
         self.current_branch_ids = current_branch_ids(&self.graph);
         self.graph_display_refs = self.graph.display_refs_by_commit();
         self.tracking_by_branch = self
@@ -40,6 +41,11 @@ impl App {
             .cloned()
             .map(|tracking| (tracking.branch.clone(), tracking))
             .collect();
+    }
+
+    pub(super) fn invalidate_graph_visual_layout(&mut self) {
+        self.graph_visual_width = None;
+        self.graph_visual_offsets.clear();
     }
 
     pub(super) fn select_graph_entry(&mut self, delta: i32) {
@@ -108,8 +114,7 @@ impl App {
             self.diff_path = None;
             self.diff_generation = self.diff_generation.wrapping_add(1);
             self.diff_loading = false;
-            self.diff_lines.clear();
-            self.diff_cache = None;
+            self.set_diff_lines(Vec::new());
             self.details_loading = true;
             self.details_error = None;
             self.graph_details_deadline = Some(Instant::now() + Duration::from_millis(80));

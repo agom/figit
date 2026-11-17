@@ -21,7 +21,7 @@ pub(super) enum DiffMode {
     SideBySide,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum DiffKind {
     Meta,
     Context,

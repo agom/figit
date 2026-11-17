@@ -937,18 +937,18 @@ fn tui_renders_and_drives_git_workflows_in_a_real_terminal() {
 #[test]
 fn selected_diff_hunks_can_be_staged_and_unstaged_independently() {
     let repository = init_hunk_staging_repository();
-    let mut tui = Tui::launch(repository.path());
+    let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);
     tui.wait_for("file.txt");
     tui.wait_for("2/2");
     tui.send(b"h");
     // Entering hunk mode highlights the selected hunk; sync on that because the
-    // `[/] hunk` hint alone is shown for any diff with hunks.
+    // mode shortcut hints are shown in every editable text diff.
     let selected = vt100::Color::Rgb(45, 50, 65);
     tui.wait_for_text_background("context 3", selected);
     let screen = tui.contents();
     assert!(
-        screen.contains("Space stage hunk") && screen.contains("hunk selection"),
-        "the focused diff should show its mode and primary action:\n{screen}"
+        screen.contains("f file • h hunk • l line") && screen.contains("hunk selection"),
+        "the focused diff should show its selection shortcuts and active mode:\n{screen}"
     );
     tui.send(b"j");
     tui.wait_for_text_background("context 18", selected);
@@ -1156,12 +1156,12 @@ fn line_mode_discards_only_the_selected_added_line() {
 #[test]
 fn line_mode_stages_only_the_selected_added_line() {
     let repository = init_hunk_staging_repository();
-    let mut tui = Tui::launch(repository.path());
+    let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);
     tui.wait_for("2/2");
 
     tui.send(b"l");
     tui.wait_for("line selection");
-    assert!(tui.contents().contains("Space stage line"));
+    tui.wait_for("f file • h hunk • l line");
     tui.send(b"f");
     tui.wait_for_text_background("+first ours", vt100::Color::Rgb(38, 56, 43));
     tui.send(b"l");
@@ -2908,14 +2908,14 @@ fn focused_panel_legends_toggle_and_follow_keyboard_focus() {
     tui.send(b"H");
     tui.wait_for("Space stage file");
     tui.send(b"h");
-    tui.wait_for("Space stage hunk");
+    tui.wait_for("f file • h hunk • l line");
     tui.wait_for_title_focus("Diff");
     tui.wait_for("hunk selection");
     tui.send(b"H");
-    tui.wait_until_hidden("Space stage hunk");
+    tui.wait_until_hidden("f file • h hunk • l line");
     assert!(tui.contents().contains("hunk selection"));
     tui.send(b"H");
-    tui.wait_for("Space stage hunk");
+    tui.wait_for("f file • h hunk • l line");
     tui.send(b"f");
     tui.wait_for("Space stage file");
     tui.send(b"\x1b[Z");
@@ -2950,7 +2950,7 @@ fn tab_reaches_the_read_only_commit_diff_without_staging_hints() {
     // Inspect a commit so its read-only diff and details appear.
     tui.send(b"\x1b[B");
     tui.wait_for("Commit Details");
-    tui.wait_for("Diff — ");
+    tui.wait_for("Diff · C context — ");
 
     // Tab now cycles Graph -> Commit Details -> Diff.
     tui.send(b"\t");
@@ -2975,7 +2975,7 @@ fn bracket_keys_jump_between_hunks_in_a_read_only_commit_diff() {
     // Move onto the tip commit so its read-only diff is shown.
     tui.send(b"\x1b[A");
     tui.wait_for("Commit Details");
-    tui.wait_for("Diff — file.txt");
+    tui.wait_for("Diff · C context — file.txt");
     tui.wait_for("line 10 changed");
 
     // Tab through the details pane to the diff and step through hunks with
@@ -3002,7 +3002,7 @@ fn arrow_keys_pan_the_diff_horizontally() {
 
     // Inspect the tip commit and focus its read-only diff.
     tui.send(b"\x1b[A");
-    tui.wait_for("Diff — file.txt");
+    tui.wait_for("Diff · C context — file.txt");
     tui.wait_for("ZZSTARTZZ");
     tui.send(b"\t");
     tui.wait_for_title_focus("Commit Details");

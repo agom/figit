@@ -281,6 +281,11 @@ impl App {
                 add(HunkMode, None, "hunks");
             }
             Focus::Diff if self.three_way_view.is_none() => {
+                if self.historical_commit.is_none() {
+                    add(FileMode, None, "file");
+                    add(HunkMode, None, "hunk");
+                    add(LineMode, None, "line");
+                }
                 if available.iter().any(|command| command.id == LoadFull) {
                     add(LoadFull, None, "load full diff");
                 }
@@ -300,33 +305,19 @@ impl App {
                 {
                     add(DiscardSelection, None, "discard change");
                 }
-                if self.line_mode {
-                    add(LineMode, Some("j/k"), "line");
-                } else if !self.hunk_header_indices.is_empty() {
-                    add(
-                        PreviousHunk,
-                        Some(if self.hunk_mode { "j/k" } else { "[/]" }),
-                        "hunk",
-                    );
-                }
                 if self.historical_commit.is_some() {
+                    add(PreviousHunk, Some("[/]"), "hunk");
                     add(DiffMode, None, "view");
-                } else if self.line_mode {
-                    add(FileMode, None, "file mode");
-                } else if self.hunk_mode {
-                    add(LineMode, None, "lines");
-                } else if available.iter().any(|command| command.id == HunkMode) {
-                    add(HunkMode, None, "hunks");
-                } else {
-                    add(DiffMode, None, "view");
+                } else if !available.iter().any(|command| command.id == FileMode) {
+                    // Remote operations can leave read-only navigation available.
+                    add(PreviousHunk, Some("[/]"), "hunk");
                 }
             }
             _ => {}
         }
-        actions.truncate(match self.focus {
-            Focus::Graph | Focus::Diff => 4,
-            _ => 3,
-        });
+        if self.focus != Focus::Diff {
+            actions.truncate(if self.focus == Focus::Graph { 4 } else { 3 });
+        }
         actions
     }
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.6 - 2026-11-17
+
+### Added
+
+- Toggle full-file context in working-tree, staged, and historical diffs with `C` or the command palette. Preserve original hunk boundaries for partial staging and discarding.
+- Show file, hunk, and line selection shortcuts in the diff footer, emphasize the active mode, and expose the context toggle beside the diff title.
+
+### Fixed
+
+- Wrap overflowing branch and tag pills onto continuation rows so tags remain visible when several references point to the same commit. Keep graph scrolling and mouse selection aligned with wrapped rows.
+
 ## 0.1.5 - 2026-11-09
 
 ### Added

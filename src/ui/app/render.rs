@@ -2,6 +2,12 @@ use std::borrow::Cow;
 
 use super::*;
 
+#[derive(Clone)]
+struct GraphPill {
+    text: String,
+    color: Color,
+}
+
 impl App {
     pub(super) fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
@@ -79,55 +85,67 @@ impl App {
         if !graph_area.is_empty() {
             let graph_focused = self.focus == Focus::Graph;
             let height = graph_area.height.saturating_sub(2) as usize;
+            let width = graph_area.width.saturating_sub(2) as usize;
+            self.ensure_graph_visual_layout(width);
             self.clamp_scroll(height);
             if self.scroll_to_selected_graph {
                 let viewport = height.max(1);
-                if self.selected_graph < self.scroll_y {
-                    self.scroll_y = self.selected_graph;
-                } else if self.selected_graph >= self.scroll_y + viewport {
-                    self.scroll_y = self.selected_graph + 1 - viewport;
+                if let Some((entry_start, entry_end)) =
+                    self.graph_visual_range_for_selection(self.selected_graph)
+                {
+                    let entry_height = entry_end.saturating_sub(entry_start);
+                    if entry_start < self.scroll_y {
+                        self.scroll_y = entry_start;
+                    } else if entry_end > self.scroll_y + viewport {
+                        self.scroll_y = if entry_height <= viewport {
+                            entry_end - viewport
+                        } else {
+                            entry_start
+                        };
+                    }
                 }
                 self.scroll_to_selected_graph = false;
             }
-            let width = graph_area.width.saturating_sub(2) as usize;
 
             let mut lines: Vec<Line> = Vec::with_capacity(height);
             let has_local = !self.local_status.is_empty();
-            if has_local && self.scroll_y == 0 && lines.len() < height {
-                let mut local_line = Line::from(Span::styled(
-                    format!("✎ Local changes ({})", self.local_status.len()),
-                    Style::default()
-                        .fg(Color::LightYellow)
-                        .patch(if self.selected_graph == 0 {
-                            self.selection_text_style(graph_focused)
-                        } else {
-                            Style::default()
-                        }),
-                ));
-                pad_colored_lines(std::slice::from_mut(&mut local_line), width);
-                if self.selected_graph == 0 {
-                    self.style_graph_selection(&mut local_line, graph_focused);
+            let end = self
+                .scroll_y
+                .saturating_add(height)
+                .min(self.graph_visual_line_total());
+            for visual_index in self.scroll_y..end {
+                if has_local && visual_index == 0 {
+                    let mut line = Line::from(Span::styled(
+                        format!("✎ Local changes ({})", self.local_status.len()),
+                        Style::default().fg(Color::LightYellow).patch(
+                            if self.selected_graph == 0 {
+                                self.selection_text_style(graph_focused)
+                            } else {
+                                Style::default()
+                            },
+                        ),
+                    ));
+                    pad_colored_lines(std::slice::from_mut(&mut line), width);
+                    if self.selected_graph == 0 {
+                        self.style_graph_selection(&mut line, graph_focused);
+                    }
+                    lines.push(line);
+                    continue;
                 }
-                lines.push(local_line);
-            }
-            if self.loading && self.rows.is_empty() && lines.is_empty() && height > 0 {
-                let mut loading_line = Line::from(Span::styled(
-                    "Loading commit graph…",
-                    Style::default().fg(Color::LightYellow),
-                ));
-                pad_colored_lines(std::slice::from_mut(&mut loading_line), width);
-                lines.push(loading_line);
-            }
-            let skip = self.scroll_y.saturating_sub(usize::from(has_local));
-            for (offset, row) in self
-                .rows
-                .iter()
-                .skip(skip)
-                .take(height.saturating_sub(lines.len()))
-                .enumerate()
-            {
-                let graph_index = skip + offset + usize::from(has_local);
-                let mut line = self.render_row(row, width);
+                let Some(graph_index) = self.graph_visual_selection_at(visual_index) else {
+                    continue;
+                };
+                let row_index = graph_index.saturating_sub(usize::from(has_local));
+                let Some(row) = self.rows.get(row_index) else {
+                    continue;
+                };
+                let visual_start = self.graph_visual_offsets[row_index] + usize::from(has_local);
+                let continuation = visual_index.saturating_sub(visual_start);
+                let mut line = if continuation == 0 {
+                    self.render_row(row, width)
+                } else {
+                    self.render_row_continuation(row, row_index, width, continuation - 1)
+                };
                 let commit_id = &self.graph.commits[row.commit_index].id;
                 if !self.current_branch_ids.contains(commit_id)
                     || (self.graph_action == Some(GraphAction::Reset)
@@ -141,16 +159,26 @@ impl App {
                     let lane_columns = visible_lanes.saturating_mul(2).saturating_sub(1);
                     dim_graph_line(&mut line, 0, lane_columns, self.bg, &self.terminal_palette);
                 }
-                if let (Some(color), Some(sha)) =
-                    (self.conflict_commit_color(commit_id), line.spans.last_mut())
-                {
-                    sha.style = sha.style.fg(color);
+                if continuation == 0 {
+                    if let (Some(color), Some(sha)) =
+                        (self.conflict_commit_color(commit_id), line.spans.last_mut())
+                    {
+                        sha.style = sha.style.fg(color);
+                    }
                 }
                 pad_colored_lines(std::slice::from_mut(&mut line), width);
                 if self.selected_graph == graph_index {
                     self.style_graph_selection(&mut line, graph_focused);
                 }
                 lines.push(line);
+            }
+            if self.loading && self.rows.is_empty() && lines.is_empty() && height > 0 {
+                let mut loading_line = Line::from(Span::styled(
+                    "Loading commit graph…",
+                    Style::default().fg(Color::LightYellow),
+                ));
+                pad_colored_lines(std::slice::from_mut(&mut loading_line), width);
+                lines.push(loading_line);
             }
             f.render_widget(
                 Paragraph::new(lines).block(self.panel_footer(
@@ -161,7 +189,7 @@ impl App {
                 )),
                 graph_area,
             );
-            let total_graph = self.rows.len() + usize::from(has_local);
+            let total_graph = self.graph_visual_line_total();
             if total_graph > height {
                 let mut state = ScrollbarState::new(total_graph)
                     .position(scrollbar_position(self.scroll_y, total_graph, height))
@@ -253,19 +281,37 @@ impl App {
                     .collect();
                 Paragraph::new(Text::from(lines))
             };
+            let diff_prefix = "Diff · C context";
             let diff_title = match (&self.diff_path, self.diff_truncated) {
                 (Some(path), Some((shown, total))) => {
-                    let notice = format!(" · showing {shown} of {total} lines (L loads all)");
+                    let context = if self.full_file_context {
+                        " · full-file context"
+                    } else {
+                        ""
+                    };
+                    let notice =
+                        format!("{context} · showing {shown} of {total} lines (L loads all)");
                     let available = usize::from(diff_area.width.saturating_sub(2))
-                        .saturating_sub("Diff — ".chars().count() + notice.chars().count());
-                    format!("Diff — {}{notice}", truncate(&path.display(), available))
+                        .saturating_sub(diff_prefix.chars().count() + 3 + notice.chars().count());
+                    format!(
+                        "{diff_prefix} — {}{notice}",
+                        truncate(&path.display(), available)
+                    )
                 }
                 (Some(path), None) => {
+                    let context = if self.full_file_context {
+                        " · full-file context"
+                    } else {
+                        ""
+                    };
                     let available = usize::from(diff_area.width.saturating_sub(2))
-                        .saturating_sub("Diff — ".chars().count());
-                    format!("Diff — {}", truncate(&path.display(), available))
+                        .saturating_sub(diff_prefix.chars().count() + 3 + context.chars().count());
+                    format!(
+                        "{diff_prefix} — {}{context}",
+                        truncate(&path.display(), available)
+                    )
                 }
-                (None, _) => "Diff".to_string(),
+                (None, _) => diff_prefix.to_string(),
             };
             let mut diff_block = self.panel_block(&diff_title, self.focus == Focus::Diff);
             let metadata = if self.diff_path.is_some() {
@@ -404,6 +450,7 @@ impl App {
                 "Diff",
                 &[
                     ("v", "unified / side-by-side"),
+                    ("C", "toggle full-file context"),
                     ("[ / ]", "previous / next hunk"),
                     ("j / k", "scroll a line"),
                     ("← / →", "pan horizontally"),
@@ -2207,6 +2254,25 @@ impl App {
                 span.style = muted;
             }
         }
+        if self.focus == Focus::Diff
+            && self.historical_commit.is_none()
+            && self.three_way_view.is_none()
+        {
+            let active_label = if self.line_mode {
+                " line"
+            } else if self.hunk_mode {
+                " hunk"
+            } else {
+                " file"
+            };
+            for span in &mut hints.spans {
+                if span.content == active_label {
+                    span.style = Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD);
+                }
+            }
+        }
         let mut footer = Line::default();
         if !hints.spans.is_empty() {
             footer.push_span(Span::styled(" ", muted));
@@ -2245,8 +2311,256 @@ impl App {
     }
 
     fn clamp_scroll(&mut self, height: usize) {
-        let total = self.rows.len() + usize::from(!self.local_status.is_empty());
+        let total = self.graph_visual_line_total();
         self.scroll_y = self.scroll_y.min(total.saturating_sub(height.max(1)));
+    }
+
+    pub(super) fn ensure_graph_visual_layout(&mut self, width: usize) {
+        let has_local = !self.local_status.is_empty();
+        if self.graph_visual_width == Some(width)
+            && self.graph_visual_has_local == has_local
+            && self.graph_visual_offsets.len() == self.rows.len() + 1
+        {
+            return;
+        }
+        let mut offsets = Vec::with_capacity(self.rows.len() + 1);
+        offsets.push(0);
+        for row in &self.rows {
+            let count = self.graph_ref_lines(row, width).len().max(1);
+            offsets.push(offsets.last().copied().unwrap_or(0) + count);
+        }
+        self.graph_visual_offsets = offsets;
+        self.graph_visual_width = Some(width);
+        self.graph_visual_has_local = has_local;
+    }
+
+    pub(super) fn graph_visual_line_total(&self) -> usize {
+        self.graph_visual_offsets.last().copied().unwrap_or(0)
+            + usize::from(self.graph_visual_has_local)
+    }
+
+    pub(super) fn graph_visual_selection_at(&self, visual_line: usize) -> Option<usize> {
+        let local_offset = usize::from(self.graph_visual_has_local);
+        if self.graph_visual_has_local && visual_line == 0 {
+            return Some(0);
+        }
+        let relative = visual_line.checked_sub(local_offset)?;
+        let row = self
+            .graph_visual_offsets
+            .partition_point(|&offset| offset <= relative)
+            .saturating_sub(1);
+        (row < self.rows.len() && relative < self.graph_visual_offsets[row + 1])
+            .then_some(row + local_offset)
+    }
+
+    fn graph_visual_range_for_selection(&self, selection: usize) -> Option<(usize, usize)> {
+        let local_offset = usize::from(self.graph_visual_has_local);
+        if self.graph_visual_has_local && selection == 0 {
+            return Some((0, 1));
+        }
+        let row = selection.checked_sub(local_offset)?;
+        let start = self.graph_visual_offsets.get(row)? + local_offset;
+        let end = self.graph_visual_offsets.get(row + 1)? + local_offset;
+        Some((start, end))
+    }
+
+    fn graph_lane_prefix_width(&self, row: &GraphRow) -> usize {
+        let visible = row
+            .cells
+            .len()
+            .min(self.max_lanes)
+            .saturating_sub(self.scroll_x.min(self.max_lanes));
+        visible.saturating_mul(2).max(1)
+    }
+
+    fn graph_pills_for_row(&self, row: &GraphRow) -> Vec<GraphPill> {
+        let commit = &self.graph.commits[row.commit_index];
+        let lane_color = row
+            .node_col
+            .map(|column| PALETTE[row.colors[column] % PALETTE.len()])
+            .unwrap_or(Color::White);
+        self.graph_display_refs
+            .get(&commit.id)
+            .into_iter()
+            .flatten()
+            .map(|reference| {
+                let checked_out = reference.kind == RefKind::LocalBranch
+                    && self.graph.head_id.as_deref() == Some(commit.id.as_str())
+                    && self.graph.head_name.as_deref() == Some(reference.name.as_str());
+                let (mut text, color) = match reference.kind {
+                    RefKind::Head => ("HEAD".to_string(), Color::Green),
+                    RefKind::LocalBranch if reference.has_remote => {
+                        let marker = if checked_out {
+                            format!("{HEAD_BRANCH_MARKER} ")
+                        } else {
+                            String::new()
+                        };
+                        (
+                            format!("{marker}{REMOTE_GLYPH} {}", reference.name),
+                            lane_color,
+                        )
+                    }
+                    RefKind::LocalBranch => {
+                        let name = if checked_out {
+                            format!("{HEAD_BRANCH_MARKER} {}", reference.name)
+                        } else {
+                            reference.name.clone()
+                        };
+                        (name, lane_color)
+                    }
+                    RefKind::RemoteBranch => (reference.name.clone(), lane_color),
+                    RefKind::Tag => (format!("{TAG_GLYPH} {}", reference.name), Color::Cyan),
+                };
+                if reference.kind == RefKind::LocalBranch {
+                    if let Some(tracking) = self.tracking_by_branch.get(&reference.name) {
+                        if tracking.gone {
+                            text.push_str(" ✗");
+                        }
+                        if tracking.ahead > 0 {
+                            text.push_str(&format!(" {AHEAD_GLYPH}{}", tracking.ahead));
+                        }
+                        if tracking.behind > 0 {
+                            text.push_str(&format!(" {BEHIND_GLYPH}{}", tracking.behind));
+                        }
+                    }
+                }
+                GraphPill { text, color }
+            })
+            .collect()
+    }
+
+    fn graph_ref_lines(&self, row: &GraphRow, width: usize) -> Vec<Vec<GraphPill>> {
+        let pills = self.graph_pills_for_row(row);
+        let padding = if self.bg.is_some() { 4 } else { 2 };
+        let prefix = self.graph_lane_prefix_width(row);
+        let first_budget = width.saturating_sub(prefix + 13);
+        let continuation_budget = width.saturating_sub(prefix + 1);
+        let mut first = Vec::new();
+        let mut used = 0usize;
+        let mut next = 0usize;
+        for pill in &pills {
+            let pill_width = Line::from(pill.text.as_str()).width() + padding;
+            if used + pill_width + 1 > first_budget {
+                break;
+            }
+            first.push(pill.clone());
+            used += pill_width + 1;
+            next += 1;
+        }
+        let mut lines = vec![first];
+        while next < pills.len() {
+            let mut line = Vec::new();
+            let mut line_used = 0usize;
+            while next < pills.len() {
+                let max_text = continuation_budget.saturating_sub(padding + 1);
+                if max_text == 0 {
+                    break;
+                }
+                let mut pill = pills[next].clone();
+                let text_width = Line::from(pill.text.as_str()).width();
+                let remaining_text = continuation_budget.saturating_sub(line_used + padding + 1);
+                if line_used > 0 && text_width > remaining_text {
+                    break;
+                }
+                if text_width > max_text {
+                    pill.text = truncate(&pill.text, max_text);
+                }
+                let rendered_width = Line::from(pill.text.as_str()).width() + padding;
+                if line_used + rendered_width + 1 > continuation_budget {
+                    break;
+                }
+                line_used += rendered_width + 1;
+                line.push(pill);
+                next += 1;
+                if text_width > max_text {
+                    break;
+                }
+            }
+            if line.is_empty() {
+                break;
+            }
+            lines.push(line);
+        }
+        lines
+    }
+
+    fn push_graph_pill(&self, line: &mut Line<'static>, pill: &GraphPill) {
+        let color = presentation::pill_fill_color(pill.color, &self.terminal_palette);
+        match self.bg {
+            Some(bg) => {
+                let text_style = Style::default()
+                    .fg(presentation::pill_text_color(
+                        color,
+                        self.bg,
+                        &self.terminal_palette,
+                    ))
+                    .bg(color);
+                let cap_style = Style::default().fg(color).bg(bg);
+                line.push_span(Span::styled(PILL_LEFT.to_string(), cap_style));
+                line.push_span(Span::styled(format!(" {} ", pill.text), text_style));
+                line.push_span(Span::styled(PILL_RIGHT.to_string(), cap_style));
+            }
+            None => {
+                let style = Style::default()
+                    .fg(color)
+                    .bg(presentation::pill_text_color(
+                        color,
+                        self.bg,
+                        &self.terminal_palette,
+                    ))
+                    .add_modifier(Modifier::REVERSED);
+                line.push_span(Span::styled(format!(" {} ", pill.text), style));
+            }
+        }
+        line.push_span(Span::raw(" "));
+    }
+
+    pub(super) fn render_row_continuation(
+        &self,
+        row: &GraphRow,
+        row_index: usize,
+        width: usize,
+        continuation: usize,
+    ) -> Line<'static> {
+        let groups = self.graph_ref_lines(row, width);
+        let Some(pills) = groups.get(continuation + 1) else {
+            return Line::default();
+        };
+        let lane_start = self.scroll_x.min(self.max_lanes);
+        let lane_end = row.cells.len().min(self.max_lanes);
+        let next = self.rows.get(row_index + 1);
+        let mut line = Line::default();
+        for column in lane_start..lane_end {
+            let continues = next
+                .and_then(|next| next.cells.get(column))
+                .is_some_and(|cell| {
+                    matches!(
+                        cell,
+                        layout::CellGlyph::Node
+                            | layout::CellGlyph::MergeNode
+                            | layout::CellGlyph::Vertical
+                            | layout::CellGlyph::MergeRight
+                    )
+                });
+            if continues {
+                let color = next
+                    .and_then(|next| next.colors.get(column))
+                    .map(|color| PALETTE[*color % PALETTE.len()])
+                    .unwrap_or(Color::DarkGray);
+                line.push_span(Span::styled("│", Style::default().fg(color)));
+            } else {
+                line.push_span(Span::raw(" "));
+            }
+            if column + 1 < lane_end {
+                line.push_span(Span::raw(" "));
+            }
+        }
+        line.push_span(Span::raw(" "));
+        for pill in pills {
+            self.push_graph_pill(&mut line, pill);
+        }
+        pad_colored_lines(std::slice::from_mut(&mut line), width);
+        line
     }
 
     pub(super) fn render_row<'a>(&'a self, row: &'a GraphRow, width: usize) -> Line<'a> {
@@ -2280,93 +2594,13 @@ impl App {
         line.push_span(Span::raw(" "));
         used += 1;
 
-        // The color of the branch's own lane in the graph, so each branch label
-        // matches its path (HEAD/tags keep their own colors).
-        let lane_color = row
-            .node_col
-            .map(|nc| PALETTE[row.colors[nc] % PALETTE.len()])
-            .unwrap_or(Color::White);
-
-        for r in self
-            .graph_display_refs
-            .get(&commit.id)
-            .into_iter()
-            .flatten()
-        {
-            let is_checked_out_branch = r.kind == RefKind::LocalBranch
-                && self.graph.head_id.as_deref() == Some(commit.id.as_str())
-                && self.graph.head_name.as_deref() == Some(r.name.as_str());
-            let (mut text, color) = match r.kind {
-                RefKind::Head => ("HEAD".to_string(), Color::Green),
-                RefKind::LocalBranch if r.has_remote => {
-                    let marker = if is_checked_out_branch {
-                        format!("{HEAD_BRANCH_MARKER} ")
-                    } else {
-                        String::new()
-                    };
-                    (format!("{marker}{REMOTE_GLYPH} {}", r.name), lane_color)
-                }
-                RefKind::LocalBranch => {
-                    let label = if is_checked_out_branch {
-                        format!("{HEAD_BRANCH_MARKER} {}", r.name)
-                    } else {
-                        r.name.clone()
-                    };
-                    (label, lane_color)
-                }
-                RefKind::RemoteBranch => (r.name.clone(), lane_color),
-                RefKind::Tag => (format!("{TAG_GLYPH} {}", r.name), Color::Cyan),
-            };
-            if r.kind == RefKind::LocalBranch {
-                if let Some(tracking) = self.tracking_by_branch.get(&r.name) {
-                    if tracking.gone {
-                        text.push_str(" ✗");
-                    }
-                    if tracking.ahead > 0 {
-                        text.push_str(&format!(" {AHEAD_GLYPH}{}", tracking.ahead));
-                    }
-                    if tracking.behind > 0 {
-                        text.push_str(&format!(" {BEHIND_GLYPH}{}", tracking.behind));
-                    }
-                }
+        let ref_lines = self.graph_ref_lines(row, width);
+        if let Some(pills) = ref_lines.first() {
+            for pill in pills {
+                used +=
+                    Line::from(pill.text.as_str()).width() + if self.bg.is_some() { 5 } else { 3 };
+                self.push_graph_pill(&mut line, pill);
             }
-            let label_budget = width.saturating_sub(used + 13);
-            if label_budget < 6 {
-                break;
-            }
-            text = truncate(&text, label_budget.saturating_sub(5));
-            let color = presentation::pill_fill_color(color, &self.terminal_palette);
-            match self.bg {
-                // Rounded caps use the same color as the pill fill.
-                Some(bg) => {
-                    let text_style = Style::default()
-                        .fg(presentation::pill_text_color(
-                            color,
-                            self.bg,
-                            &self.terminal_palette,
-                        ))
-                        .bg(color);
-                    let cap_style = Style::default().fg(color).bg(bg);
-                    line.push_span(Span::styled(PILL_LEFT.to_string(), cap_style));
-                    line.push_span(Span::styled(format!(" {text} "), text_style));
-                    line.push_span(Span::styled(PILL_RIGHT.to_string(), cap_style));
-                }
-                // Use reverse video when the terminal background is unknown.
-                None => {
-                    let style = Style::default()
-                        .fg(color)
-                        .bg(presentation::pill_text_color(
-                            color,
-                            self.bg,
-                            &self.terminal_palette,
-                        ))
-                        .add_modifier(Modifier::REVERSED);
-                    line.push_span(Span::styled(format!(" {text} "), style));
-                }
-            }
-            used += Line::from(text.as_str()).width() + if self.bg.is_some() { 4 } else { 2 };
-            line.push_span(Span::raw(" "));
-            used += 1;
         }
 
         // The graph pane keeps the compact identity column visible. When there
