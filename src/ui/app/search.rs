@@ -9,6 +9,9 @@ impl App {
             matches: Vec::new(),
             selected: 0,
             searched: false,
+            all_history: false,
+            scanned: 0,
+            generation: self.graph_generation,
             error: None,
         });
     }
@@ -25,9 +28,14 @@ impl App {
                 self.search_popup = None;
                 self.diff_cache = None;
             }
+            KeyCode::Char('a') if state.searched => {
+                state.all_history = true;
+                state.error = None;
+            }
             KeyCode::Enter if state.searched => self.select_search_result(),
             KeyCode::Enter => self.start_commit_search(),
             KeyCode::Char('/') if state.searched => {
+                state.all_history = false;
                 state.query.clear();
                 state.cursor = 0;
                 state.matches.clear();
@@ -87,23 +95,42 @@ impl App {
         if query.is_empty() {
             return;
         }
-        let folded = query.to_lowercase();
-        let position = self
-            .graph
-            .commits
-            .iter()
-            .enumerate()
-            .filter(|(_, commit)| {
-                commit.summary.to_lowercase().contains(&folded)
-                    || commit.message.to_lowercase().contains(&folded)
-            })
-            .map(|(index, commit)| (index, commit.id.clone()))
-            .collect::<Vec<_>>();
-        state.matches = position.into_iter().map(|(_, id)| id).collect();
+        state.matches.clear();
+        state.scanned = 0;
         state.selected = 0;
         state.searched = true;
         state.error = None;
-        self.select_search_result();
+        self.extend_history_search();
+    }
+
+    pub(super) fn extend_history_search(&mut self) {
+        let Some(state) = self.search_popup.as_mut().filter(|s| s.searched) else {
+            return;
+        };
+        if state.generation != self.graph_generation {
+            state.generation = self.graph_generation;
+            state.matches.clear();
+            state.scanned = 0;
+            state.selected = 0;
+        }
+        if state.scanned == self.graph.commits.len() {
+            return;
+        }
+        let query = state.query.trim().to_lowercase();
+        let first = state.matches.is_empty();
+        state.matches.extend(
+            self.graph.commits[state.scanned..]
+                .iter()
+                .filter(|commit| {
+                    commit.summary.to_lowercase().contains(&query)
+                        || commit.message.to_lowercase().contains(&query)
+                })
+                .map(|commit| commit.id.clone()),
+        );
+        state.scanned = self.graph.commits.len();
+        if first {
+            self.select_search_result();
+        }
     }
     pub(super) fn select_search_result(&mut self) {
         let Some(id) = self
@@ -132,6 +159,9 @@ pub(super) struct SearchPopupState {
     pub(super) matches: Vec<String>,
     pub(super) selected: usize,
     pub(super) searched: bool,
+    pub(super) all_history: bool,
+    scanned: usize,
+    generation: u64,
     pub(super) error: Option<String>,
 }
 

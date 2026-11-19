@@ -254,7 +254,7 @@ impl App {
                         add(Amend, "Amend commit", "a", "");
                         add(Fixup, "Create fixup commit", "f", "squash");
                     }
-                    add(Undo, "Undo from reflog", "u", "restore history");
+                    add(Undo, "Restore from reflog", "u", "restore history");
                 }
             }
             Focus::Status | Focus::Diff

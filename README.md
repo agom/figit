@@ -159,7 +159,7 @@ and commit file lists, it moves the file selection and updates the diff.
 | `z` | Maximize / restore the focused panel |
 | `j` / `k` (or `↑` / `↓`) | Move the selection / scroll |
 | `/` | Search loaded commit titles and descriptions: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
-| `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
+| `u` | Restore from reflog: pick an entry (`↑`/`↓`, then `Enter` restores) |
 | `U` | Check for or install an update |
 | `:` | Fuzzy-find commands for the focused panel |
 | `Shift+H` | Show / hide shortcuts in the focused panel’s bottom border |
@@ -174,8 +174,7 @@ Hints adapt to the selected file and diff mode, and fit without wrapping in narr
 panels. Press `Shift+H` to hide or show them for the current session; hints start
 visible on each launch. Press `?` for the full key map.
 
-Commit search covers the history currently loaded in the graph. Older commits
-load as you navigate toward the end of the graph; rerun the search to include them.
+Commit search covers the history currently loaded in the graph. Press `a` after searching to scan older pages in the background. Matches become available as pages arrive; Esc closes the search and stops requesting pages.
 
 Press `:` to open commands above the focused panel’s bottom border. Type to
 fuzzy-filter command names, use `↑`/`↓` to select, `Enter` to run, and `Esc` to
@@ -204,6 +203,16 @@ background polling every five seconds.
 | `R` | Rebase the checked-out branch onto the selected commit or ref |
 | `F` | Fetch |
 | `+` | Push the selected branch, or the selected tag when the commit has no branch |
+
+In the rename dialog, `Ctrl+R` includes the upstream branch. In the delete
+dialog, `r` includes the remote target. Check the displayed upstream name
+before confirming. Remote rename preserves the upstream commit even when the
+local branch is ahead or behind, and requires an unused destination name.
+
+`u` opens **Restore from reflog**. The selected entry previews a checkout or
+a soft reset. A soft reset moves the current branch while keeping the index
+and working files; changes relative to the restored commit appear staged.
+The reflog cannot recover discarded uncommitted file contents.
 
 Local branches whose configured upstream no longer exists are marked with `✗`.
 

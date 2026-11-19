@@ -712,13 +712,13 @@ impl App {
                 self.focus = Focus::Graph;
             }
             KeyCode::Char('r') if self.graph_action == Some(GraphAction::Delete) => {
-                self.remote_action = !self.remote_action;
+                self.toggle_remote_action();
             }
             KeyCode::Char('r')
                 if self.graph_action == Some(GraphAction::Rename)
                     && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                self.remote_action = !self.remote_action;
+                self.toggle_remote_action();
             }
             KeyCode::Char('p')
                 if self.graph_action == Some(GraphAction::Tag)

@@ -164,7 +164,12 @@ impl App {
             let page = match page.result {
                 Ok(page) => page,
                 Err(error) => {
-                    self.show_git_error(error);
+                    if let Some(search) = self.search_popup.as_mut().filter(|s| s.all_history) {
+                        search.all_history = false;
+                        search.error = Some(error);
+                    } else {
+                        self.show_git_error(error);
+                    }
                     return;
                 }
             };
@@ -193,11 +198,13 @@ impl App {
             self.graph_complete = page.complete;
         }
 
+        self.extend_history_search();
+
         // Load the next page once the selection actually reaches the oldest
         // loaded row, so a short first page does not eagerly pull everything.
         let loaded_rows = self.rows.len() + usize::from(!self.local_status.is_empty());
         let at_end = loaded_rows > 0 && self.selected_graph + 1 >= loaded_rows;
-        if at_end
+        if (at_end || self.search_popup.as_ref().is_some_and(|s| s.all_history))
             && !self.graph_complete
             && !self.graph_page_in_progress
             && !self.loading

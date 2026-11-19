@@ -1280,8 +1280,8 @@ fn undo_shortcut_confirms_and_reverts_the_latest_commit() {
     tui.wait_for("? help");
 
     tui.send(b"u");
-    tui.wait_for("Undo from reflog");
-    tui.wait_for("commit: tip commit");
+    tui.wait_for("Restore from reflog");
+    tui.wait_for("soft reset");
     tui.send(b"\r");
 
     tui.wait_for("Staged (1)");
@@ -1299,7 +1299,7 @@ fn undo_picker_can_restore_an_older_reflog_entry() {
     tui.wait_for("Graph");
 
     tui.send(b"u");
-    tui.wait_for("Undo from reflog");
+    tui.wait_for("Restore from reflog");
     tui.wait_for("HEAD@{2}");
     tui.send(b"\x1b[B");
     tui.wait_for_text_background("HEAD@{2}", vt100::Color::Idx(14));
@@ -1743,6 +1743,21 @@ fn older_history_loads_lazily_as_the_selection_reaches_the_end() {
     // Appending must not disturb the row the selection was on.
     tui.wait_for("extra two");
     assert_eq!(git_ok(repository.path(), &["rev-parse", "HEAD"]), head);
+    tui.quit();
+}
+
+#[test]
+fn search_all_history_selects_an_unloaded_commit() {
+    let repository = init_linear_repository();
+    let mut tui = Tui::launch_with_env(repository.path(), None, &[("FIGIT_GRAPH_PAGE", "2")]);
+    tui.wait_for("2+ commits");
+    tui.send(b"/root commit\r");
+    tui.wait_for("0 matches");
+    tui.send(b"a");
+    tui.wait_for("1 match");
+    tui.wait_for("all history");
+    tui.send(b"\x1b");
+    tui.wait_for("root commit");
     tui.quit();
 }
 

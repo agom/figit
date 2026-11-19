@@ -412,7 +412,7 @@ impl App {
                     ("Shift+H", "show/hide focused-panel shortcuts"),
                     ("j / k", "move selection"),
                     ("/", "search commits"),
-                    ("u", "undo from reflog"),
+                    ("u", "restore from reflog"),
                     ("?", "toggle this help"),
                     ("U", "check/install update"),
                     ("q", "quit"),
@@ -1421,7 +1421,7 @@ impl App {
             GraphAction::Fetch => "Fetch from remote",
             GraphAction::PushRemote => "Push to remote",
             GraphAction::Push => "Push",
-            GraphAction::Undo => "Undo from reflog",
+            GraphAction::Undo => "Restore from reflog",
         };
         let popup_hints = match action {
             GraphAction::Fetch | GraphAction::PushRemote => styled_key_hints(
@@ -1624,7 +1624,7 @@ impl App {
             GraphAction::Rename => format!(
                 "New branch name: {}  •  Remote: {}",
                 self.graph_action_input,
-                if self.remote_action { "yes" } else { "no" }
+                self.remote_action_label()
             ),
             GraphAction::Delete => {
                 let target = self.delete_targets.get(self.delete_target_index);
@@ -1645,7 +1645,7 @@ impl App {
                 };
                 format!(
                     "Delete {kind} {name}?{position}  •  Remote: {}",
-                    if self.remote_action { "yes" } else { "no" }
+                    if self.remote_action && kind == "branch" { self.remote_action_label() } else if self.remote_action { "yes".into() } else { "no".into() }
                 )
             }
             GraphAction::Checkout => "Checkout selected commit (detached HEAD)?".to_string(),
@@ -1743,8 +1743,9 @@ impl App {
                 GraphAction::Rename => (
                     "New branch name: ",
                     Some(format!(
-                        "  •  Remote: {}",
-                        if self.remote_action { "yes" } else { "no" }
+                        "  •  {} → {}",
+                        self.selected_local_branch().unwrap_or_default(),
+                        self.remote_action_label()
                     )),
                 ),
                 _ => unreachable!(),
@@ -1818,6 +1819,22 @@ impl App {
         );
     }
 
+    fn remote_action_label(&self) -> String {
+        if !self.remote_action {
+            return "local only".into();
+        }
+        self.branch_update
+            .as_ref()
+            .map(|p| {
+                format!(
+                    "{}/{}",
+                    p.remote,
+                    p.source.trim_start_matches("refs/heads/")
+                )
+            })
+            .unwrap_or_else(|| "no remote branch".into())
+    }
+
     fn render_undo_popup(&self, f: &mut Frame, area: Rect) {
         let panes = Layout::vertical([
             Constraint::Length(1),
@@ -1825,12 +1842,17 @@ impl App {
             Constraint::Length(1),
         ])
         .split(area);
-        let latest = self
-            .undo_options
-            .first()
-            .map(|entry| entry.latest_message.as_str())
-            .unwrap_or("HEAD reflog");
-        f.render_widget(Paragraph::new(format!("Latest action: {latest}")), panes[0]);
+        if let Some(entry) = self.undo_options.get(self.undo_selection) {
+            let id = entry.previous_id.chars().take(7).collect::<String>();
+            let preview = match &entry.restore_branch {
+                Some(branch) => format!("Check out {branch} at {id}; Git checks local changes"),
+                None => format!(
+                    "Move {} to {id}; keep index and files (soft reset)",
+                    self.graph.head_name.as_deref().unwrap_or("HEAD")
+                ),
+            };
+            f.render_widget(Paragraph::new(preview), panes[0]);
+        }
 
         let mut entries = self
             .undo_options
@@ -2723,19 +2745,34 @@ impl App {
         }
         if let Some(search) = &self.search_popup {
             let mut spans = vec![Span::styled(
-                format!("Search loaded commits: {}", search.query),
+                format!(
+                    "Search {}: {}",
+                    if search.all_history {
+                        "all commits"
+                    } else {
+                        "loaded commits"
+                    },
+                    search.query
+                ),
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
             )];
+            let scope = if self.graph_complete {
+                "all history"
+            } else if search.all_history {
+                "searching all history…"
+            } else {
+                "loaded history · a search all"
+            };
             let summary = if let Some(error) = &search.error {
                 format!(" · {}", truncate(error, 48))
             } else if search.searched && search.matches.is_empty() {
-                " · 0 matches · / new search · Esc close".to_string()
+                format!(" · 0 matches · {scope} · / new search · Esc close")
             } else if search.searched {
                 let count = search.matches.len();
                 format!(
-                    " · {count} match{} · {}/{} · ↑/↓ result · Esc close",
+                    " · {count} match{} · {}/{} · {scope} · ↑/↓ result · Esc close",
                     if count == 1 { "" } else { "es" },
                     search.selected + 1,
                     count

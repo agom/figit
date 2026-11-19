@@ -86,6 +86,7 @@ impl App {
         self.reset_mode = 1;
         self.reset_focus = 1;
         self.remote_action = false;
+        self.branch_update = None;
         self.push_mode = 0;
         self.push_focus = 0;
         self.pull_focus = 0;
@@ -100,6 +101,29 @@ impl App {
             _ => CommitField::Commit,
         };
         self.focus = Focus::Commit;
+    }
+
+    pub(super) fn toggle_remote_action(&mut self) {
+        self.remote_action = !self.remote_action;
+        self.branch_update = None;
+        self.action_error = None;
+        if !self.remote_action {
+            return;
+        }
+        let branch = if self.graph_action == Some(GraphAction::Rename) {
+            self.selected_local_branch()
+        } else {
+            self.delete_targets
+                .get(self.delete_target_index)
+                .filter(|t| !t.is_tag())
+                .map(|t| t.name().to_owned())
+        };
+        if let (Some(branch), Some(backend)) = (branch, self.backend.as_ref()) {
+            match backend.prepare_branch_update(&branch) {
+                Ok(plan) => self.branch_update = Some(plan),
+                Err(error) => self.action_error = Some(error.to_string()),
+            }
+        }
     }
 
     pub(super) fn open_undo_popup(&mut self) {
@@ -180,6 +204,8 @@ impl App {
         } else if action == GraphAction::Delete {
             let len = self.delete_targets.len();
             if len > 1 {
+                self.remote_action = false;
+                self.branch_update = None;
                 self.delete_target_index = if forward {
                     (self.delete_target_index + 1) % len
                 } else {
@@ -289,6 +315,17 @@ impl App {
         let branch = self.selected_local_branch();
         let remote_branch = self.selected_remote_branch();
         let delete = self.delete_targets.get(self.delete_target_index).cloned();
+        let plan = self.branch_update.clone();
+        if remote_action
+            && plan.is_none()
+            && (action == GraphAction::Rename
+                || (action == GraphAction::Delete
+                    && matches!(delete, Some(DeleteTarget::Branch(_)))))
+        {
+            self.action_error =
+                Some("Cannot resolve remote branch. Toggle remote to retry.".into());
+            return;
+        }
         let undo = self.undo_options.get(self.undo_selection).cloned();
         let discard_paths = self.discard_paths.clone();
         let completed_target = target.clone();
@@ -314,10 +351,10 @@ impl App {
                 GraphAction::RebaseOnto => unreachable!("rebase onto is handled before dispatch"),
                 GraphAction::Rename => branch.map_or_else(
                     || Err(anyhow::anyhow!("no local branch at selected commit")),
-                    |old| backend.rename_branch(&old, &input, remote_action),
+                    |old| backend.rename_branch(&old, &input, plan.as_ref()),
                 ),
                 GraphAction::Delete => match delete.as_ref() {
-                    Some(DeleteTarget::Branch(name)) => backend.delete_branch(name, remote_action),
+                    Some(DeleteTarget::Branch(name)) => backend.delete_branch(name, plan.as_ref()),
                     Some(DeleteTarget::Tag(name)) => backend.delete_tag(name, remote_action),
                     None => Err(anyhow::anyhow!("no ref selected to delete")),
                 },
@@ -328,7 +365,11 @@ impl App {
                     unreachable!("remote operation is dispatched to the background worker")
                 }
                 GraphAction::Undo => undo.as_ref().map_or_else(
-                    || Err(anyhow::anyhow!("undo preview expired; open Undo again")),
+                    || {
+                        Err(anyhow::anyhow!(
+                            "restore preview expired; open Restore from reflog again"
+                        ))
+                    },
                     |info| backend.undo_ref_change(info),
                 ),
                 GraphAction::Discard => {
@@ -1345,7 +1386,7 @@ impl GraphAction {
             Self::ResetBranchRemote => "Reset branch to upstream",
             Self::Fetch => "Fetch",
             Self::PushRemote | Self::Push => "Push",
-            Self::Undo => "Undo",
+            Self::Undo => "Restore from reflog",
         }
     }
 }
