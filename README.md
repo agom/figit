@@ -160,7 +160,7 @@ and commit file lists, it moves the file selection and updates the diff.
 | `g` | Toggle the graph pane |
 | `z` | Maximize / restore the focused panel |
 | `j` / `k` (or `↑` / `↓`) | Move the selection / scroll |
-| `/` | Search loaded commit titles and descriptions: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
+| `/` | Search commit messages and local or remote branch names: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
 | `u` | Restore from reflog: pick an entry (`↑`/`↓`, then `Enter` restores) |
 | `U` | Check for or install an update |
 | `:` | Fuzzy-find commands for the focused panel |
@@ -176,7 +176,12 @@ Hints adapt to the selected file and diff mode, and fit without wrapping in narr
 panels. Press `Shift+H` to hide or show them for the current session; hints start
 visible on each launch. Press `?` for the full key map.
 
-Commit search covers the history currently loaded in the graph. Press `a` after searching to scan older pages in the background. Matches become available as pages arrive; Esc closes the search and stops requesting pages.
+Search is case-insensitive and treats the query as literal text. A branch name
+matches its tip commit. For example, searching `origin/feature` finds matching
+remote-tracking branches, and a commit appears only once even if several names
+or its message match. Press `Enter` to search loaded rows and `a` to search all
+history with Git in the background. Arrow keys jump between results. Figit loads
+older graph pages only as needed to reach the selected commit; `Esc` closes search.
 
 Press `:` to open commands above the focused panel’s bottom border. Type to
 fuzzy-filter command names, use `↑`/`↓` to select, `Enter` to run, and `Esc` to

@@ -1763,6 +1763,41 @@ fn search_all_history_selects_an_unloaded_commit() {
 }
 
 #[test]
+fn branch_search_matches_local_and_remote_names_once_per_tip() {
+    let repository = init_linear_repository();
+    let path = repository.path();
+    git_ok(path, &["branch", "topic/Feature.1", "HEAD~1"]);
+    git_ok(
+        path,
+        &[
+            "update-ref",
+            "refs/remotes/origin/topic/Feature.1",
+            "HEAD~1",
+        ],
+    );
+    git_ok(
+        path,
+        &[
+            "update-ref",
+            "refs/remotes/origin/topic/Feature.10",
+            "HEAD~2",
+        ],
+    );
+    let mut tui = Tui::launch_sized(path, None, &[("FIGIT_GRAPH_PAGE", "2")], 160, 36);
+    tui.wait_for("2+ commits");
+    tui.send(b"/TOPIC/feature.1\r");
+    tui.wait_for("1 match");
+    tui.wait_for_selected_text("target commit");
+    tui.send(b"a");
+    tui.wait_for("2 matches");
+    tui.send(b"\x1b[B");
+    tui.wait_for_selected_text("root commit");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Search all commits:");
+    tui.quit();
+}
+
+#[test]
 fn search_finds_commit_titles_and_descriptions() {
     let repository = init_linear_repository();
     git_ok(
