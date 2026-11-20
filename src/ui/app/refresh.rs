@@ -369,7 +369,18 @@ impl App {
             layout: layout_engine,
             complete,
         } = snapshot;
-        if graph == self.graph && local_status == self.local_status {
+        // A refresh loads only the first page. Compare that page and its refs
+        // without throwing away older pages loaded by navigation or search.
+        let same_history = graph.head_id == self.graph.head_id
+            && graph.head_name == self.graph.head_name
+            && graph.refs == self.graph.refs
+            && graph.branch_tracking == self.graph.branch_tracking
+            && if complete {
+                self.graph_complete && graph.commits == self.graph.commits
+            } else {
+                self.graph.commits.starts_with(&graph.commits)
+            };
+        if same_history && local_status == self.local_status {
             // Porcelain status records change kinds, not file contents.
             let file = self.diff_path.as_ref().map(|path| {
                 let fingerprint = self.backend.as_ref().and_then(|backend| {
