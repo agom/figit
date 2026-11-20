@@ -1,46 +1,52 @@
 #!/bin/sh
-# figit installer bootstrap: runs the latest stable release, or the newest
-# pre-release when no stable release exists yet.
+# Install the latest stable release, or the newest prerelease if none is stable.
 set -eu
 
 latest="https://github.com/agom/figit/releases/latest/download/figit-installer.sh"
-api="https://api.github.com/repos/agom/figit/releases?per_page=1"
+api="https://api.github.com/repos/agom/figit/releases"
 
 if command -v curl >/dev/null 2>&1; then
-    if curl -fsIL -o /dev/null "$latest"; then
-        url="$latest"
-    else
-        url=$(curl -fsSL "$api" \
-            | grep -o 'https://github.com/agom/figit/releases/download/[^"]*/figit-installer.sh' \
-            | head -n 1 || true)
-    fi
+    download() { curl -fsSL -o "$2" "$1"; }
+    stable_status() {
+        curl -sS -o /dev/null -w '%{http_code}' "$api/latest"
+    }
 elif command -v wget >/dev/null 2>&1; then
-    # `--spider` is not available in every wget, but a failed probe only means
-    # we resolve the newest release from the API instead.
-    if wget --spider -q "$latest" 2>/dev/null; then
-        url="$latest"
-    else
-        url=$(wget -qO- "$api" \
-            | grep -o 'https://github.com/agom/figit/releases/download/[^"]*/figit-installer.sh' \
-            | head -n 1 || true)
-    fi
+    download() { wget -q -O "$2" "$1"; }
+    stable_status() {
+        # wget exits nonzero for HTTP errors. Inspect the server response so
+        # a missing release can be distinguished from a network failure.
+        wget -S -O /dev/null "$api/latest" 2>"$tmp/headers" || :
+        awk '$1 ~ /^HTTP\// {code=$2} END {print code}' "$tmp/headers"
+    }
 else
     echo "figit: install requires curl or wget" >&2
     exit 1
 fi
 
-if [ -z "${url:-}" ]; then
-    echo "figit: could not find a published release to install" >&2
+retry() {
+    echo "figit: $1. Please retry the installation later." >&2
     exit 1
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+
+if ! download "$latest" "$tmp/installer"; then
+    # A missing installer asset alone says nothing about the stable channel.
+    status=$(stable_status) || retry "could not check the stable release"
+    case "$status" in
+        404) ;;
+        200) retry "could not download the stable installer" ;;
+        *) retry "could not check the stable release" ;;
+    esac
+    download "$api?per_page=1" "$tmp/releases" || retry "could not check published releases"
+    url=$(grep -o 'https://github.com/agom/figit/releases/download/[^"]*/figit-installer.sh"' "$tmp/releases" | head -n 1 | tr -d '"')
+    if [ -z "$url" ]; then
+        echo "figit: no installer found in the newest published release" >&2
+        exit 1
+    fi
+    download "$url" "$tmp/installer" || retry "could not download the prerelease installer"
 fi
 
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT INT TERM
-
-if command -v curl >/dev/null 2>&1; then
-    curl -sSfL "$url" -o "$tmp"
-else
-    wget -qO "$tmp" "$url"
-fi
-
-sh "$tmp"
+sh "$tmp/installer"
