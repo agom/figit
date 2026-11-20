@@ -35,6 +35,7 @@ pub struct BranchUpdate {
 /// Git operations used by the UI. Repository reads use `gix`; mutations are
 /// implemented behind this trait so UI workflows remain backend-independent.
 pub trait GitBackend {
+    fn plain_icons(&self) -> bool;
     fn working_directory(&self) -> &Path;
     fn index_fingerprint(&self) -> Option<(std::time::SystemTime, u64)>;
     fn watch_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>>;
@@ -139,8 +140,13 @@ pub trait GitBackend {
     fn undo_ref_change(&self, expected: &UndoInfo) -> anyhow::Result<()>;
     fn cherry_pick(&self, target: &str) -> anyhow::Result<()>;
     fn revert(&self, target: &str) -> anyhow::Result<()>;
-    fn rename_branch(&self, old: &str, new: &str, remote: bool) -> anyhow::Result<()>;
-    fn delete_branch(&self, name: &str, remote: bool) -> anyhow::Result<()>;
+    fn rename_branch(
+        &self,
+        old: &str,
+        new: &str,
+        remote: Option<&BranchUpdate>,
+    ) -> anyhow::Result<()>;
+    fn delete_branch(&self, name: &str, remote: Option<&BranchUpdate>) -> anyhow::Result<()>;
     fn delete_tag(&self, name: &str, remote: bool) -> anyhow::Result<()>;
     fn pull(&self, branch: &str, strategy: PullStrategy) -> anyhow::Result<()>;
     fn prepare_branch_update(&self, branch: &str) -> anyhow::Result<BranchUpdate>;

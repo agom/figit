@@ -412,7 +412,7 @@ impl App {
                     ("Shift+H", "show/hide focused-panel shortcuts"),
                     ("j / k", "move selection"),
                     ("/", "search commits"),
-                    ("u", "undo from reflog"),
+                    ("u", "restore from reflog"),
                     ("?", "toggle this help"),
                     ("U", "check/install update"),
                     ("q", "quit"),
@@ -427,7 +427,9 @@ impl App {
                     ("b / t", "new branch / tag"),
                     ("r", "reset"),
                     ("n / d", "rename / delete ref"),
-                    ("p", "cherry-pick or pull"),
+                    ("p", "pull current branch"),
+                    ("P", "cherry-pick commit"),
+                    ("f", "fixup and autosquash staged changes"),
                     ("x", "revert"),
                     ("w / e", "reword / edit commit"),
                     ("i", "interactive rebase"),
@@ -1183,7 +1185,7 @@ impl App {
                     if plan.published {
                         "\nIncludes published history; a force push may be required."
                     } else {
-                        ""
+                        "\nNo remote-tracking branch contains the target."
                     }
                 ),
                 CommitMode::Reword(_) => {
@@ -1421,7 +1423,7 @@ impl App {
             GraphAction::Fetch => "Fetch from remote",
             GraphAction::PushRemote => "Push to remote",
             GraphAction::Push => "Push",
-            GraphAction::Undo => "Undo from reflog",
+            GraphAction::Undo => "Restore from reflog",
         };
         let popup_hints = match action {
             GraphAction::Fetch | GraphAction::PushRemote => styled_key_hints(
@@ -1624,7 +1626,7 @@ impl App {
             GraphAction::Rename => format!(
                 "New branch name: {}  •  Remote: {}",
                 self.graph_action_input,
-                if self.remote_action { "yes" } else { "no" }
+                self.remote_action_label()
             ),
             GraphAction::Delete => {
                 let target = self.delete_targets.get(self.delete_target_index);
@@ -1645,7 +1647,7 @@ impl App {
                 };
                 format!(
                     "Delete {kind} {name}?{position}  •  Remote: {}",
-                    if self.remote_action { "yes" } else { "no" }
+                    if self.remote_action && kind == "branch" { self.remote_action_label() } else if self.remote_action { "yes".into() } else { "no".into() }
                 )
             }
             GraphAction::Checkout => "Checkout selected commit (detached HEAD)?".to_string(),
@@ -1743,8 +1745,9 @@ impl App {
                 GraphAction::Rename => (
                     "New branch name: ",
                     Some(format!(
-                        "  •  Remote: {}",
-                        if self.remote_action { "yes" } else { "no" }
+                        "  •  {} → {}",
+                        self.selected_local_branch().unwrap_or_default(),
+                        self.remote_action_label()
                     )),
                 ),
                 _ => unreachable!(),
@@ -1818,6 +1821,22 @@ impl App {
         );
     }
 
+    fn remote_action_label(&self) -> String {
+        if !self.remote_action {
+            return "local only".into();
+        }
+        self.branch_update
+            .as_ref()
+            .map(|p| {
+                format!(
+                    "{}/{}",
+                    p.remote,
+                    p.source.trim_start_matches("refs/heads/")
+                )
+            })
+            .unwrap_or_else(|| "no remote branch".into())
+    }
+
     fn render_undo_popup(&self, f: &mut Frame, area: Rect) {
         let panes = Layout::vertical([
             Constraint::Length(1),
@@ -1825,12 +1844,17 @@ impl App {
             Constraint::Length(1),
         ])
         .split(area);
-        let latest = self
-            .undo_options
-            .first()
-            .map(|entry| entry.latest_message.as_str())
-            .unwrap_or("HEAD reflog");
-        f.render_widget(Paragraph::new(format!("Latest action: {latest}")), panes[0]);
+        if let Some(entry) = self.undo_options.get(self.undo_selection) {
+            let id = entry.previous_id.chars().take(7).collect::<String>();
+            let preview = match &entry.restore_branch {
+                Some(branch) => format!("Check out {branch} at {id}; Git checks local changes"),
+                None => format!(
+                    "Move {} to {id}; keep index and files (soft reset)",
+                    self.graph.head_name.as_deref().unwrap_or("HEAD")
+                ),
+            };
+            f.render_widget(Paragraph::new(preview), panes[0]);
+        }
 
         let mut entries = self
             .undo_options
@@ -2071,10 +2095,13 @@ impl App {
         });
         let stats_width = Line::from(stat_text.as_str()).width();
         let glyph_width = Line::from(glyph.to_string()).width();
-        let (icon, icon_color) = self.file_icon(&entry.path.display());
-        let icon_width = Line::from(icon.to_string()).width();
+        let icon = (!self.plain_icons).then(|| {
+            let (icon, color) = self.file_icon(&entry.path.display());
+            Span::styled(format!("{icon} "), selection.fg(color))
+        });
+        let icon_width = icon.as_ref().map_or(0, Span::width);
         // In very narrow panes, keep the +/- totals visible.
-        if width < glyph_width + 1 + icon_width + 1 + stats_width + 1 {
+        if width < glyph_width + 1 + icon_width + stats_width + 1 {
             let mut spans = Vec::new();
             if let Some((added, removed)) = stat {
                 let removed = truncate_start(&format!("-{removed}"), width);
@@ -2108,8 +2135,7 @@ impl App {
             .map_or(0, |recap| Line::from(recap).width());
         let recap_spacing = usize::from(hunk_recap.is_some());
         if hunk_recap.is_some()
-            && width
-                < glyph_width + 1 + icon_width + 1 + stats_width + recap_width + recap_spacing + 9
+            && width < glyph_width + 1 + icon_width + stats_width + recap_width + recap_spacing + 9
         {
             // Keep the +/- totals visible on narrow panes; the recap can be
             // omitted when both summaries cannot fit side by side.
@@ -2120,7 +2146,7 @@ impl App {
             .map_or(0, |recap| Line::from(recap).width());
         let recap_spacing = usize::from(hunk_recap.is_some());
         let suffix_width = stats_width + recap_width + recap_spacing;
-        let path_width = width.saturating_sub(glyph_width + 1 + icon_width + 1 + suffix_width + 1);
+        let path_width = width.saturating_sub(glyph_width + 1 + icon_width + suffix_width + 1);
         let path_label = if let Some(original) = entry
             .original_path
             .as_ref()
@@ -2151,8 +2177,8 @@ impl App {
             Style::default()
         });
         let path_display_width = Line::from(display_path.as_str()).width();
-        let available_padding = width
-            .saturating_sub(glyph_width + 1 + icon_width + 1 + path_display_width + suffix_width);
+        let available_padding =
+            width.saturating_sub(glyph_width + 1 + icon_width + path_display_width + suffix_width);
         let padding = if display_path.is_empty() {
             available_padding
         } else {
@@ -2163,10 +2189,9 @@ impl App {
             .map_or(("", display_path.as_str()), |slash| {
                 display_path.split_at(slash + 1)
             });
-        let icon_style = selection.fg(icon_color);
-        let mut spans = vec![
-            Span::styled(format!("{glyph} "), glyph_style),
-            Span::styled(format!("{icon} "), icon_style),
+        let mut spans = vec![Span::styled(format!("{glyph} "), glyph_style)];
+        spans.extend(icon);
+        spans.extend([
             Span::styled(
                 directory.to_string(),
                 path_style
@@ -2178,7 +2203,7 @@ impl App {
                 " ".repeat(padding),
                 Style::default().bg(if selected { selected_bg } else { Color::Reset }),
             ),
-        ];
+        ]);
         if let Some(hunk_recap) = hunk_recap {
             spans.push(Span::styled(
                 hunk_recap,
@@ -2384,6 +2409,7 @@ impl App {
             .into_iter()
             .flatten()
             .map(|reference| {
+                let head = self.indicator(HEAD_BRANCH_MARKER, "HEAD");
                 let checked_out = reference.kind == RefKind::LocalBranch
                     && self.graph.head_id.as_deref() == Some(commit.id.as_str())
                     && self.graph.head_name.as_deref() == Some(reference.name.as_str());
@@ -2391,36 +2417,51 @@ impl App {
                     RefKind::Head => ("HEAD".to_string(), Color::Green),
                     RefKind::LocalBranch if reference.has_remote => {
                         let marker = if checked_out {
-                            format!("{HEAD_BRANCH_MARKER} ")
+                            format!("{head} ")
                         } else {
                             String::new()
                         };
                         (
-                            format!("{marker}{REMOTE_GLYPH} {}", reference.name),
+                            format!(
+                                "{marker}{} {}",
+                                self.indicator(REMOTE_GLYPH, "remote"),
+                                reference.name
+                            ),
                             lane_color,
                         )
                     }
                     RefKind::LocalBranch => {
                         let name = if checked_out {
-                            format!("{HEAD_BRANCH_MARKER} {}", reference.name)
+                            format!("{head} {}", reference.name)
                         } else {
                             reference.name.clone()
                         };
                         (name, lane_color)
                     }
                     RefKind::RemoteBranch => (reference.name.clone(), lane_color),
-                    RefKind::Tag => (format!("{TAG_GLYPH} {}", reference.name), Color::Cyan),
+                    RefKind::Tag => (
+                        format!("{} {}", self.indicator(TAG_GLYPH, "tag"), reference.name),
+                        Color::Cyan,
+                    ),
                 };
                 if reference.kind == RefKind::LocalBranch {
                     if let Some(tracking) = self.tracking_by_branch.get(&reference.name) {
                         if tracking.gone {
-                            text.push_str(" ✗");
+                            text.push_str(self.indicator(" ✗", " gone"));
                         }
                         if tracking.ahead > 0 {
-                            text.push_str(&format!(" {AHEAD_GLYPH}{}", tracking.ahead));
+                            text.push_str(&format!(
+                                " {}{}",
+                                self.indicator(AHEAD_GLYPH, "+"),
+                                tracking.ahead
+                            ));
                         }
                         if tracking.behind > 0 {
-                            text.push_str(&format!(" {BEHIND_GLYPH}{}", tracking.behind));
+                            text.push_str(&format!(
+                                " {}{}",
+                                self.indicator(BEHIND_GLYPH, "-"),
+                                tracking.behind
+                            ));
                         }
                     }
                 }
@@ -2431,7 +2472,11 @@ impl App {
 
     fn graph_ref_lines(&self, row: &GraphRow, width: usize) -> Vec<Vec<GraphPill>> {
         let pills = self.graph_pills_for_row(row);
-        let padding = if self.bg.is_some() { 4 } else { 2 };
+        let padding = if self.bg.is_some() && !self.plain_icons {
+            4
+        } else {
+            2
+        };
         let prefix = self.graph_lane_prefix_width(row);
         let first_budget = width.saturating_sub(prefix + 13);
         let continuation_budget = width.saturating_sub(prefix + 1);
@@ -2496,9 +2541,13 @@ impl App {
                     ))
                     .bg(color);
                 let cap_style = Style::default().fg(color).bg(bg);
-                line.push_span(Span::styled(PILL_LEFT.to_string(), cap_style));
+                if !self.plain_icons {
+                    line.push_span(Span::styled(PILL_LEFT.to_string(), cap_style));
+                }
                 line.push_span(Span::styled(format!(" {} ", pill.text), text_style));
-                line.push_span(Span::styled(PILL_RIGHT.to_string(), cap_style));
+                if !self.plain_icons {
+                    line.push_span(Span::styled(PILL_RIGHT.to_string(), cap_style));
+                }
             }
             None => {
                 let style = Style::default()
@@ -2723,19 +2772,34 @@ impl App {
         }
         if let Some(search) = &self.search_popup {
             let mut spans = vec![Span::styled(
-                format!("Search loaded commits: {}", search.query),
+                format!(
+                    "Search {}: {}",
+                    if search.all_history {
+                        "all commits"
+                    } else {
+                        "loaded commits"
+                    },
+                    search.query
+                ),
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
             )];
+            let scope = if self.graph_complete {
+                "all history"
+            } else if search.all_history {
+                "searching all history…"
+            } else {
+                "loaded history · a search all"
+            };
             let summary = if let Some(error) = &search.error {
                 format!(" · {}", truncate(error, 48))
             } else if search.searched && search.matches.is_empty() {
-                " · 0 matches · / new search · Esc close".to_string()
+                format!(" · 0 matches · {scope} · / new search · Esc close")
             } else if search.searched {
                 let count = search.matches.len();
                 format!(
-                    " · {count} match{} · {}/{} · ↑/↓ result · Esc close",
+                    " · {count} match{} · {}/{} · {scope} · ↑/↓ result · Esc close",
                     if count == 1 { "" } else { "es" },
                     search.selected + 1,
                     count

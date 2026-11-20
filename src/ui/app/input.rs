@@ -651,7 +651,7 @@ impl App {
                 self.action_error =
                     Some("Focus the Graph with Tab and select a commit first".into());
             }
-            KeyCode::Char('p') if self.focus == Focus::Graph && !self.selected_current_branch() => {
+            KeyCode::Char('P') if self.focus == Focus::Graph && !self.selected_current_branch() => {
                 self.execute_panel_command(CommandId::Graph(GraphAction::CherryPick))
             }
             KeyCode::Char('x') if self.focus == Focus::Graph => {
@@ -712,13 +712,13 @@ impl App {
                 self.focus = Focus::Graph;
             }
             KeyCode::Char('r') if self.graph_action == Some(GraphAction::Delete) => {
-                self.remote_action = !self.remote_action;
+                self.toggle_remote_action();
             }
             KeyCode::Char('r')
                 if self.graph_action == Some(GraphAction::Rename)
                     && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                self.remote_action = !self.remote_action;
+                self.toggle_remote_action();
             }
             KeyCode::Char('p')
                 if self.graph_action == Some(GraphAction::Tag)
@@ -839,7 +839,10 @@ impl App {
             KeyCode::Esc if self.commit_dialog.visible() => {
                 let return_to_graph = matches!(
                     self.commit_dialog.mode,
-                    CommitMode::Reword(_) | CommitMode::Edit(_) | CommitMode::PlanReword(_)
+                    CommitMode::Reword(_)
+                        | CommitMode::Edit(_)
+                        | CommitMode::PlanReword(_)
+                        | CommitMode::Autosquash(_)
                 );
                 self.commit_dialog.set_open(false);
                 self.commit_dialog.set_confirming(false);
@@ -866,9 +869,15 @@ impl App {
                 CommitField::Description => self.commit_field = CommitField::Commit,
                 CommitField::Commit => self.commit_changes(),
                 CommitField::Cancel => {
+                    let autosquash = matches!(self.commit_dialog.mode, CommitMode::Autosquash(_));
                     self.commit_dialog.set_open(false);
                     self.commit_dialog.set_confirming(false);
-                    self.focus = Focus::Status;
+                    self.commit_dialog.mode = CommitMode::Normal;
+                    self.focus = if autosquash {
+                        Focus::Graph
+                    } else {
+                        Focus::Status
+                    };
                 }
             },
             KeyCode::Char(c)
@@ -920,8 +929,17 @@ impl App {
             {
                 self.execute_panel_command(CommandId::Amend);
             }
+            KeyCode::Char('f') if self.focus == Focus::Graph => {
+                if let Some(command) = self
+                    .panel_commands()
+                    .into_iter()
+                    .find(|command| command.key == "f")
+                {
+                    self.execute_panel_command(command.id);
+                }
+            }
             KeyCode::Char('f')
-                if matches!(self.focus, Focus::Status | Focus::Graph)
+                if self.focus == Focus::Status
                     && self.commit_actions_available()
                     && self.rebase_edit.is_none() =>
             {

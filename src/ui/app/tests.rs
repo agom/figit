@@ -305,10 +305,12 @@ fn panel_hints_describe_available_file_and_diff_actions() {
     );
     app.selected_graph = 2; // commit without a branch
     assert!(app.panel_actions().contains(&("c", "checkout")));
-    assert!(!app
-        .panel_actions()
-        .iter()
-        .any(|(_, description)| description.contains("pick")));
+    assert!(app.panel_actions().contains(&("P", "cherry-pick")));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert!(app.graph_action.is_none());
+    app.handle_key(KeyEvent::from(KeyCode::Char('P')));
+    assert_eq!(app.graph_action, Some(GraphAction::CherryPick));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(!app
         .panel_actions()
         .iter()
@@ -3280,6 +3282,21 @@ fn external_conflict_edits_invalidate_previews_before_writing_or_staging() {
 }
 
 #[test]
+fn first_page_refresh_preserves_loaded_history_and_search_progress() {
+    let (directory, mut app) = review_app("history");
+    let mut snapshot = load_repository_snapshot(directory.path()).unwrap();
+    assert!(snapshot.graph.commits.len() > 1);
+    let before = app.graph.commits.clone();
+    snapshot.graph.commits.truncate(1);
+    snapshot.rows.truncate(1);
+    snapshot.complete = false;
+    let generation = app.graph_generation;
+    app.reload_external_snapshot(snapshot);
+    assert_eq!(app.graph_generation, generation);
+    assert_eq!(app.graph.commits, before);
+}
+
+#[test]
 fn content_refresh_updates_diff_and_preserves_then_clamps_viewport() {
     let (directory, mut app) = review_app("content");
     app.diff_area = Rect::new(0, 0, 60, 10);
@@ -3899,16 +3916,18 @@ fn auto_fetch_defers_during_editing_or_rebase() {
 }
 
 #[test]
-fn compound_history_commands_are_contextual_and_need_no_shortcut() {
+fn graph_fixup_shortcut_requires_an_eligible_target_and_staged_changes() {
     let mut app = shortcut_test_app();
     app.focus = Focus::Graph;
     app.selected_graph = 2;
+    assert!(!app.panel_actions().iter().any(|(key, _)| *key == "f"));
+    app.local_status.retain(|entry| entry.index == 'M');
     let entries = app.panel_commands();
     let command = entries
         .iter()
         .find(|command| command.id == CommandId::FixupAutosquash)
         .unwrap();
-    assert!(command.key.is_empty());
+    assert_eq!(command.key, "f");
     assert!(entries
         .iter()
         .any(|command| command.id == CommandId::Autosquash && command.key.is_empty()));

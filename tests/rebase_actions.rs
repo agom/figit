@@ -1549,13 +1549,46 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
     git_ok(path, &["checkout", "--quiet", "feature"]);
     git_ok(
         path,
-        &["push", "--quiet", "--set-upstream", "upstream", "feature"],
+        &[
+            "push",
+            "--quiet",
+            "--set-upstream",
+            "upstream",
+            "feature:team/feature",
+        ],
     );
     git_ok(path, &["checkout", "--quiet", "main"]);
 
     let backend = backend::open(path).expect("open repository");
+    git_ok(path, &["push", "upstream", "main:feature"]);
+    assert!(backend
+        .rename_branch(
+            "feature",
+            "feature",
+            Some(&backend.prepare_branch_update("feature").unwrap())
+        )
+        .is_err());
+    let delete_plan = backend.prepare_branch_update("feature").unwrap();
+    let linked = remote_dir.path().join("linked");
+    git_ok(
+        path,
+        &["worktree", "add", linked.to_str().unwrap(), "feature"],
+    );
+    git_ok(&linked, &["commit", "--allow-empty", "-m", "local only"]);
+    assert!(backend
+        .delete_branch("feature", Some(&delete_plan))
+        .is_err());
+    assert_eq!(
+        git_ok(&remote_path, &["rev-parse", "team/feature"]),
+        git_ok(path, &["rev-parse", "main"])
+    );
+    git_ok(path, &["worktree", "remove", linked.to_str().unwrap()]);
     backend
-        .rename_branch("feature", "renamed", true)
+        .rename_branch(
+            "feature",
+            "renamed",
+            Some(&backend.prepare_branch_update("feature").unwrap()),
+        )
         .expect("rename local and upstream branch");
     assert!(git(
         path,
@@ -1577,7 +1610,7 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
     .success());
     assert!(!git(
         &remote_path,
-        &["show-ref", "--verify", "--quiet", "refs/heads/feature"]
+        &["show-ref", "--verify", "--quiet", "refs/heads/team/feature"]
     )
     .status
     .success());
@@ -1588,6 +1621,54 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
     assert_eq!(
         git_ok(path, &["config", "branch.renamed.merge"]),
         "refs/heads/renamed"
+    );
+
+    assert_eq!(
+        git_ok(&remote_path, &["rev-parse", "renamed"]),
+        git_ok(path, &["rev-parse", "main"])
+    );
+    assert!(git(
+        &remote_path,
+        &["show-ref", "--verify", "refs/heads/feature"]
+    )
+    .status
+    .success());
+
+    // Advance the remote after ls-remote returns, before receive-pack
+    // advertises refs. Without the explicit lease, Git would accept deletion.
+    git_ok(path, &["branch", "race", "main"]);
+    git_ok(path, &["push", "-u", "upstream", "race"]);
+    git_ok(path, &["push", "upstream", "renamed:peer-tip"]);
+    let plan = backend.prepare_branch_update("race").unwrap();
+    git_ok(
+        path,
+        &[
+            "config",
+            "remote.upstream.receivepack",
+            r#"sh -c 'git -C "$1" update-ref refs/heads/race refs/heads/peer-tip && exec git-receive-pack "$1"' sh"#,
+        ],
+    );
+    assert!(backend.delete_branch("race", Some(&plan)).is_err());
+    assert_eq!(
+        git_ok(&remote_path, &["rev-parse", "race"]),
+        git_ok(path, &["rev-parse", "renamed"])
+    );
+    assert_eq!(git_ok(path, &["rev-parse", "race"]), plan.old_tip);
+    git_ok(path, &["config", "--unset", "remote.upstream.receivepack"]);
+
+    // A locked local ref forces the remote-first delete to roll back.
+    let lock = path.join(".git/refs/heads/renamed.lock");
+    std::fs::write(&lock, "").unwrap();
+    assert!(backend
+        .delete_branch(
+            "renamed",
+            Some(&backend.prepare_branch_update("renamed").unwrap())
+        )
+        .is_err());
+    std::fs::remove_file(lock).unwrap();
+    assert_eq!(
+        git_ok(&remote_path, &["rev-parse", "renamed"]),
+        git_ok(path, &["rev-parse", "main"])
     );
 
     #[cfg(unix)]
@@ -1608,7 +1689,11 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
         std::fs::set_permissions(&hook, permissions).unwrap();
 
         assert!(backend
-            .rename_branch("protected", "protected-new", true)
+            .rename_branch(
+                "protected",
+                "protected-new",
+                Some(&backend.prepare_branch_update("protected").unwrap())
+            )
             .is_err());
         assert!(git(
             path,
@@ -1634,7 +1719,12 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
         .status
         .success());
 
-        assert!(backend.delete_branch("protected", true).is_err());
+        assert!(backend
+            .delete_branch(
+                "protected",
+                Some(&backend.prepare_branch_update("protected").unwrap())
+            )
+            .is_err());
         assert!(git(
             path,
             &["show-ref", "--verify", "--quiet", "refs/heads/protected"]
@@ -1651,12 +1741,17 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
     }
 
     git_ok(path, &["checkout", "--quiet", "main"]);
+    git_ok(path, &["branch", "-m", "renamed", "local-alias"]);
+    git_ok(path, &["push", "upstream", "main:local-alias"]);
     backend
-        .delete_branch("renamed", true)
+        .delete_branch(
+            "local-alias",
+            Some(&backend.prepare_branch_update("local-alias").unwrap()),
+        )
         .expect("delete local and upstream branch");
     assert!(!git(
         path,
-        &["show-ref", "--verify", "--quiet", "refs/heads/renamed"]
+        &["show-ref", "--verify", "--quiet", "refs/heads/local-alias"]
     )
     .status
     .success());
@@ -1666,6 +1761,10 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
     )
     .status
     .success());
+    assert_eq!(
+        git_ok(&remote_path, &["rev-parse", "local-alias"]),
+        git_ok(path, &["rev-parse", "main"])
+    );
 }
 
 #[test]

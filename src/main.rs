@@ -11,6 +11,7 @@ ARGS:
     <PATH>    Repository to open (defaults to the current directory)
 
 OPTIONS:
+    --plain-icons    Use text indicators and omit decorative file icons
     -h, --help       Print this help and exit
     -V, --version    Print version information and exit
 
@@ -37,8 +38,10 @@ fn main() -> ExitCode {
 
 fn run() -> anyhow::Result<()> {
     let mut path: Option<PathBuf> = None;
+    let mut plain_icons = false;
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
+            "--plain-icons" => plain_icons = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return Ok(());
@@ -64,6 +67,8 @@ fn run() -> anyhow::Result<()> {
 
     let backend = figit::backend::open(&path)?;
     figit::profile::mark("backend opened");
+    let plain_icons = plain_icons || backend.plain_icons();
     let mut app = figit::ui::app::App::loading(backend);
+    app.set_plain_icons(plain_icons);
     app.run()
 }

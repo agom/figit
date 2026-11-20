@@ -164,7 +164,12 @@ impl App {
             let page = match page.result {
                 Ok(page) => page,
                 Err(error) => {
-                    self.show_git_error(error);
+                    if let Some(search) = self.search_popup.as_mut().filter(|s| s.all_history) {
+                        search.all_history = false;
+                        search.error = Some(error);
+                    } else {
+                        self.show_git_error(error);
+                    }
                     return;
                 }
             };
@@ -193,11 +198,13 @@ impl App {
             self.graph_complete = page.complete;
         }
 
+        self.extend_history_search();
+
         // Load the next page once the selection actually reaches the oldest
         // loaded row, so a short first page does not eagerly pull everything.
         let loaded_rows = self.rows.len() + usize::from(!self.local_status.is_empty());
         let at_end = loaded_rows > 0 && self.selected_graph + 1 >= loaded_rows;
-        if at_end
+        if (at_end || self.search_popup.as_ref().is_some_and(|s| s.all_history))
             && !self.graph_complete
             && !self.graph_page_in_progress
             && !self.loading
@@ -362,7 +369,18 @@ impl App {
             layout: layout_engine,
             complete,
         } = snapshot;
-        if graph == self.graph && local_status == self.local_status {
+        // A refresh loads only the first page. Compare that page and its refs
+        // without throwing away older pages loaded by navigation or search.
+        let same_history = graph.head_id == self.graph.head_id
+            && graph.head_name == self.graph.head_name
+            && graph.refs == self.graph.refs
+            && graph.branch_tracking == self.graph.branch_tracking
+            && if complete {
+                self.graph_complete && graph.commits == self.graph.commits
+            } else {
+                self.graph.commits.starts_with(&graph.commits)
+            };
+        if same_history && local_status == self.local_status {
             // Porcelain status records change kinds, not file contents.
             let file = self.diff_path.as_ref().map(|path| {
                 let fingerprint = self.backend.as_ref().and_then(|backend| {

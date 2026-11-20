@@ -114,9 +114,11 @@ disabled. `FIGIT_AUTO_FETCH=0 figit` disables it for one session. Foreground Git
 operations cancel a running background fetch before taking over. Force-with-lease
 pushes use the remote commit recorded when the push dialog opened.
 
-### Commands without shortcuts
+### Fixup and autosquash
 
-From the graph, `:` also offers **Fixup and autosquash staged changes…** and
+Stage the correction and stage or stash any remaining tracked changes. Highlight
+a non-merge commit on the current branch and press `f` to preview folding the
+staged changes into that commit. From the graph, `:` also offers **Fixup and autosquash staged changes…** and
 **Autosquash existing fixup commits…**. Select a target on the current branch;
 confirmation shows the target, affected commit count, staged file count, and
 whether the history is published. Autosquash preserves merges and stops in the
@@ -159,7 +161,7 @@ and commit file lists, it moves the file selection and updates the diff.
 | `z` | Maximize / restore the focused panel |
 | `j` / `k` (or `↑` / `↓`) | Move the selection / scroll |
 | `/` | Search loaded commit titles and descriptions: type a query, `Enter` runs it, `↑`/`↓` jump to a match, `Esc` closes |
-| `u` | Undo: pick a reflog entry (`↑`/`↓`, then `Enter` restores) |
+| `u` | Restore from reflog: pick an entry (`↑`/`↓`, then `Enter` restores) |
 | `U` | Check for or install an update |
 | `:` | Fuzzy-find commands for the focused panel |
 | `Shift+H` | Show / hide shortcuts in the focused panel’s bottom border |
@@ -168,21 +170,18 @@ and commit file lists, it moves the file selection and updates the diff.
 | `Esc` | Close the active overlay |
 
 The focused panel shows compact shortcuts in its bottom border. The graph
-prioritizes Fetch, Pull, Checkout, and Search; Pull appears only when `p` pulls
-the current branch. Other panels show up to three relevant shortcuts.
+shows `p` for Pull on the checked-out branch and `P` for Cherry-pick on other
+commit rows, alongside Fetch, Checkout, and Search when available. Other panels show up to three relevant shortcuts.
 Hints adapt to the selected file and diff mode, and fit without wrapping in narrow
 panels. Press `Shift+H` to hide or show them for the current session; hints start
 visible on each launch. Press `?` for the full key map.
 
-Commit search covers the history currently loaded in the graph. Older commits
-load as you navigate toward the end of the graph; rerun the search to include them.
+Commit search covers the history currently loaded in the graph. Press `a` after searching to scan older pages in the background. Matches become available as pages arrive; Esc closes the search and stops requesting pages.
 
 Press `:` to open commands above the focused panel’s bottom border. Type to
 fuzzy-filter command names, use `↑`/`↓` to select, `Enter` to run, and `Esc` to
 close. Commands depend on the current panel and selection. Existing confirmation
 dialogs still apply. Printable keys, including `j`/`k`, enter text in the picker.
-The existing context-sensitive `p` shortcut still cherry-picks other commits;
-Cherry-pick is also available in the Graph command picker.
 
 External repository changes refresh automatically. If filesystem watching is
 unavailable (for example, Linux watch limits are reached), Figit falls back to
@@ -197,13 +196,25 @@ background polling every five seconds.
 | `b` / `t` | Create branch / tag (the tag popup can push the tag with `Ctrl-P`) |
 | `r` | Reset (soft, mixed, hard) |
 | `n` / `d` | Rename branch / delete branch or tag (←/→ picks the target; `r` also deletes remotely) |
-| `p` | Cherry-pick, or pull when the selected commit is the current branch |
+| `p` | Pull the selected checked-out branch |
+| `f` | Fixup and autosquash staged changes into the selected commit |
+| `P` | Cherry-pick the selected commit onto the checked-out branch |
 | `x` | Revert commit |
 | `w` / `e` | Reword / edit commit (edit pauses an interactive rebase) |
 | `i` | Interactive rebase plan |
 | `R` | Rebase the checked-out branch onto the selected commit or ref |
 | `F` | Fetch |
 | `+` | Push the selected branch, or the selected tag when the commit has no branch |
+
+In the rename dialog, `Ctrl+R` includes the upstream branch. In the delete
+dialog, `r` includes the remote target. Check the displayed upstream name
+before confirming. Remote rename preserves the upstream commit even when the
+local branch is ahead or behind, and requires an unused destination name.
+
+`u` opens **Restore from reflog**. The selected entry previews a checkout or
+a soft reset. A soft reset moves the current branch while keeping the index
+and working files; changes relative to the restored commit appear staged.
+The reflog cannot recover discarded uncommitted file contents.
 
 Local branches whose configured upstream no longer exists are marked with `✗`.
 
@@ -222,9 +233,10 @@ the terminal background. Focused graph and file selections use a subtle neutral 
 preserving icon and change-count colors. With `NO_COLOR`, the active filename or
 commit subject is bold and underlined; inactive selections remain bold.
 
-File rows and branch indicators use Nerd Font icons; install a
-[Nerd Font](https://www.nerdfonts.com/) to render them (without one the glyphs
-show as placeholder boxes).
+File and branch icons use a [Nerd Font](https://www.nerdfonts.com/). For a standard
+terminal font, run `figit --plain-icons [PATH]` or set `git config --global figit.plainIcons true`.
+Omit `--global` for a single repository. Plain mode omits file icons and uses
+text indicators such as `HEAD`, `tag`, `gone`, and `+2 -1` for ahead/behind counts.
 
 | Key | Action |
 | --- | --- |

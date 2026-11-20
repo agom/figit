@@ -1280,8 +1280,8 @@ fn undo_shortcut_confirms_and_reverts_the_latest_commit() {
     tui.wait_for("? help");
 
     tui.send(b"u");
-    tui.wait_for("Undo from reflog");
-    tui.wait_for("commit: tip commit");
+    tui.wait_for("Restore from reflog");
+    tui.wait_for("soft reset");
     tui.send(b"\r");
 
     tui.wait_for("Staged (1)");
@@ -1299,7 +1299,7 @@ fn undo_picker_can_restore_an_older_reflog_entry() {
     tui.wait_for("Graph");
 
     tui.send(b"u");
-    tui.wait_for("Undo from reflog");
+    tui.wait_for("Restore from reflog");
     tui.wait_for("HEAD@{2}");
     tui.send(b"\x1b[B");
     tui.wait_for_text_background("HEAD@{2}", vt100::Color::Idx(14));
@@ -1743,6 +1743,22 @@ fn older_history_loads_lazily_as_the_selection_reaches_the_end() {
     // Appending must not disturb the row the selection was on.
     tui.wait_for("extra two");
     assert_eq!(git_ok(repository.path(), &["rev-parse", "HEAD"]), head);
+    tui.quit();
+}
+
+#[test]
+fn search_all_history_selects_an_unloaded_commit() {
+    let repository = init_linear_repository();
+    let mut tui = Tui::launch_with_env(repository.path(), None, &[("FIGIT_GRAPH_PAGE", "2")]);
+    tui.wait_for("2+ commits");
+    tui.send(b"/root commit\r");
+    tui.wait_for("0 matches");
+    tui.send(b"a");
+    tui.wait_for("1 match");
+    tui.wait_for("1/1 · all history");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Search all commits:");
+    tui.wait_for_selected_text("root commit");
     tui.quit();
 }
 
@@ -2885,6 +2901,40 @@ fn command_picker_runs_panel_actions_and_preserves_confirmations() {
 }
 
 #[test]
+fn plain_icons_show_merge_and_tracking_state_in_eighty_columns() {
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("plain");
+    assert!(std::process::Command::new("bash")
+        .args(["fixtures/branch-merge.sh", repo.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    git_ok(&repo, &["remote", "add", "origin", "."]);
+    git_ok(&repo, &["config", "branch.main.remote", "origin"]);
+    git_ok(
+        &repo,
+        &["config", "branch.main.merge", "refs/heads/missing"],
+    );
+    git_ok(&repo, &["config", "figit.plainIcons", "true"]);
+    git_ok(&repo, &["tag", "v1", "HEAD~1"]);
+    std::fs::write(repo.join("app.rs"), "staged").unwrap();
+    git_ok(&repo, &["add", "app.rs"]);
+    let mut tui = Tui::launch_sized(&repo, None, &[], 80, 36);
+    tui.wait_for("app.rs");
+    tui.wait_for("main gone");
+    tui.wait_for("tag v1");
+    let screen = tui.contents();
+    assert!(screen.contains('▲'), "{screen}");
+    assert!(
+        !screen
+            .chars()
+            .any(|c| matches!(c as u32, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd)),
+        "{screen}"
+    );
+    tui.quit();
+}
+
+#[test]
 fn focused_panel_legends_toggle_and_follow_keyboard_focus() {
     let repository = init_hunk_staging_repository();
     let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);
@@ -3787,7 +3837,7 @@ fn conflict_number_choices_base_view_and_undo_work_in_the_terminal() {
 }
 
 #[test]
-fn command_palette_runs_fixup_and_autosquash_after_confirmation() {
+fn graph_fixup_shortcut_cancels_then_autosquashes_the_selected_commit() {
     let repository = init_linear_repository();
     let path = repository.path();
     let original_head = git_ok(path, &["rev-parse", "HEAD"]);
@@ -3798,7 +3848,16 @@ fn command_palette_runs_fixup_and_autosquash_after_confirmation() {
     tui.send(b"\t\x1b[B\x1b[B");
     tui.wait_for_title_focus("Graph");
     tui.wait_for_selected_text("target commit");
-    tui.send(b":fixupandautosquash\r");
+    let index = git_ok(path, &["write-tree"]);
+    tui.wait_for("f fixup + autosquash");
+    tui.send(b"f");
+    tui.wait_for("Fixup / Autosquash");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Fixup / Autosquash");
+    assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), original_head);
+    assert_eq!(git_ok(path, &["write-tree"]), index);
+    tui.wait_for_title_focus("Graph");
+    tui.send(b"f");
     tui.wait_for("Fixup / Autosquash");
     assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), original_head);
     tui.send(b"\r");

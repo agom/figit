@@ -152,6 +152,14 @@ impl App {
         }
     }
 
+    pub(super) fn indicator(&self, glyph: &'static str, plain: &'static str) -> &'static str {
+        if self.plain_icons {
+            plain
+        } else {
+            glyph
+        }
+    }
+
     pub(super) fn repository_header(&self, width: usize) -> Line<'static> {
         let repository = self
             .repository_path
@@ -168,8 +176,11 @@ impl App {
                     " · upstream gone".to_string()
                 } else if tracking.ahead != 0 || tracking.behind != 0 {
                     format!(
-                        " {AHEAD_GLYPH}{} {BEHIND_GLYPH}{}",
-                        tracking.ahead, tracking.behind
+                        " {}{} {}{}",
+                        self.indicator(AHEAD_GLYPH, "+"),
+                        tracking.ahead,
+                        self.indicator(BEHIND_GLYPH, "-"),
+                        tracking.behind
                     )
                 } else {
                     String::new()
@@ -235,8 +246,10 @@ impl App {
         match self.focus {
             Focus::Graph => {
                 add(ConfirmFixup, None, "fixup");
+                add(FixupAutosquash, None, "fixup + autosquash");
                 add(Fetch, None, "fetch");
                 add(Graph(GraphAction::Pull), None, "pull");
+                add(Graph(GraphAction::CherryPick), None, "cherry-pick");
                 let checkout = if available
                     .iter()
                     .any(|command| command.id == Graph(GraphAction::CheckoutBranch))

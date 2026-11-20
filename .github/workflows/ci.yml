@@ -21,6 +21,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Test installer release selection
+        run: sh tests/installer.sh
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy

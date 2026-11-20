@@ -251,17 +251,50 @@ impl GixBackend {
         Ok(tracking)
     }
 
-    fn branch_upstream_remote(&self, branch: &str) -> Result<String> {
-        let refname = format!("refs/heads/{branch}");
+    fn remote_branch_target(
+        &self,
+        branch: &str,
+        expected: &crate::backend::BranchUpdate,
+    ) -> Result<(String, String, String)> {
+        let plan = self.prepare_branch_update_impl(branch)?;
+        anyhow::ensure!(
+            &plan == expected,
+            "Branch or upstream changed since confirmation"
+        );
+        anyhow::ensure!(plan.remote != ".", "Branch has no remote upstream");
         let output = git_output_checked(
             &self.workdir,
-            &["for-each-ref", "--format=%(upstream:remotename)", &refname],
+            &[
+                "ls-remote",
+                "--exit-code",
+                "--refs",
+                "--",
+                &plan.remote,
+                &plan.source,
+            ],
         )?;
-        let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if remote.is_empty() || remote == "." {
-            anyhow::bail!("branch '{branch}' has no remote upstream");
-        }
-        Ok(remote)
+        let listing = String::from_utf8(output.stdout)?;
+        let oid = listing
+            .lines()
+            .find_map(|line| {
+                let (oid, reference) = line.split_once('\t')?;
+                (reference == plan.source).then_some(oid)
+            })
+            .context("upstream branch missing")?
+            .to_owned();
+        // Keep the observed object locally for the rename or a guarded rollback.
+        git_output_checked(
+            &self.workdir,
+            &[
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--",
+                &plan.remote,
+                &oid,
+            ],
+        )?;
+        Ok((plan.remote, plan.source, oid))
     }
 
     fn commit_parents(&self, target: &str) -> Result<Vec<String>> {
@@ -934,6 +967,13 @@ impl super::GitBackend for GixBackend {
     fn index_fingerprint(&self) -> Option<(std::time::SystemTime, u64)> {
         let metadata = fs::metadata(self.repo.index_path()).ok()?;
         Some((metadata.modified().ok()?, metadata.len()))
+    }
+
+    fn plain_icons(&self) -> bool {
+        self.repo
+            .config_snapshot()
+            .boolean("figit.plainIcons")
+            .unwrap_or(false)
     }
 
     fn working_directory(&self) -> &Path {
@@ -2450,21 +2490,46 @@ impl super::GitBackend for GixBackend {
         run_git(&self.workdir, ["revert", target])
     }
 
-    fn rename_branch(&self, old: &str, new: &str, remote: bool) -> Result<()> {
-        let remote_name = if remote {
-            Some(self.branch_upstream_remote(old)?)
-        } else {
-            None
-        };
+    fn rename_branch(
+        &self,
+        old: &str,
+        new: &str,
+        remote: Option<&crate::backend::BranchUpdate>,
+    ) -> Result<()> {
+        let remote_name = remote
+            .map(|plan| self.remote_branch_target(old, plan))
+            .transpose()?;
+        if let Some((remote, source, _)) = &remote_name {
+            let destination = format!("refs/heads/{new}");
+            if &destination != source {
+                let existing = git_output_checked(
+                    &self.workdir,
+                    &["ls-remote", "--refs", "--", remote, &destination],
+                )?;
+                anyhow::ensure!(
+                    existing.stdout.is_empty(),
+                    "Remote destination {remote}/{new} already exists"
+                );
+            }
+        }
         run_git(&self.workdir, ["branch", "-m", old, new])?;
-        if let Some(remote_name) = remote_name {
-            let new_ref = format!("refs/heads/{new}:refs/heads/{new}");
-            let old_ref = format!(":refs/heads/{old}");
+        if let Some((remote_name, source, oid)) = remote_name {
+            let destination = format!("refs/heads/{new}");
+            if destination == source {
+                return Ok(());
+            }
+            let new_ref = format!("{oid}:{destination}");
+            let old_ref = format!(":{source}");
+            let source_lease = format!("--force-with-lease={source}:{oid}");
+            let destination_lease = format!("--force-with-lease={destination}:");
             if let Err(error) = run_git(
                 &self.workdir,
                 [
                     "push",
                     "--atomic",
+                    &source_lease,
+                    &destination_lease,
+                    "--",
                     remote_name.as_str(),
                     new_ref.as_str(),
                     old_ref.as_str(),
@@ -2477,19 +2542,24 @@ impl super::GitBackend for GixBackend {
                 }
                 return Err(error).context("rename remote branch; local rename was rolled back");
             }
-            let upstream = format!("{remote_name}/{new}");
+            // The local rename preserved branch.<new>.remote. Store the
+            // server ref directly, including for custom fetch mappings.
             run_git(
                 &self.workdir,
-                ["branch", "--set-upstream-to", upstream.as_str(), new],
+                ["config", &format!("branch.{new}.merge"), &destination],
             )
             .context("remote branch was renamed, but setting its upstream failed")?;
         }
         Ok(())
     }
 
-    fn delete_branch(&self, name: &str, remote: bool) -> Result<()> {
-        let Some(remote_name) = remote
-            .then(|| self.branch_upstream_remote(name))
+    fn delete_branch(
+        &self,
+        name: &str,
+        remote: Option<&crate::backend::BranchUpdate>,
+    ) -> Result<()> {
+        let Some((remote_name, source, oid)) = remote
+            .map(|plan| self.remote_branch_target(name, plan))
             .transpose()?
         else {
             return run_git(&self.workdir, ["branch", "-D", name]);
@@ -2506,13 +2576,25 @@ impl super::GitBackend for GixBackend {
         // local branch untouched. If local deletion fails, restore the remote.
         run_git(
             &self.workdir,
-            ["push", remote_name.as_str(), "--delete", name],
+            [
+                "push",
+                &format!("--force-with-lease={source}:{oid}"),
+                "--",
+                &remote_name,
+                &format!(":{source}"),
+            ],
         )?;
         if let Err(error) = run_git(&self.workdir, ["branch", "-D", name]) {
-            let restore = format!("refs/heads/{name}:refs/heads/{name}");
+            let restore = format!("{oid}:{source}");
             if let Err(rollback) = run_git(
                 &self.workdir,
-                ["push", remote_name.as_str(), restore.as_str()],
+                [
+                    "push",
+                    &format!("--force-with-lease={source}:"),
+                    "--",
+                    &remote_name,
+                    &restore,
+                ],
             ) {
                 anyhow::bail!(
                     "local branch deletion failed ({error:#}); restoring the remote branch also failed ({rollback:#})"
