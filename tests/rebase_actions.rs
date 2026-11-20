@@ -1634,6 +1634,28 @@ fn remote_branch_rename_and_delete_use_the_configured_upstream() {
     .status
     .success());
 
+    // Advance the remote after ls-remote returns, before receive-pack
+    // advertises refs. Without the explicit lease, Git would accept deletion.
+    git_ok(path, &["branch", "race", "main"]);
+    git_ok(path, &["push", "-u", "upstream", "race"]);
+    git_ok(path, &["push", "upstream", "renamed:peer-tip"]);
+    let plan = backend.prepare_branch_update("race").unwrap();
+    git_ok(
+        path,
+        &[
+            "config",
+            "remote.upstream.receivepack",
+            r#"sh -c 'git -C "$1" update-ref refs/heads/race refs/heads/peer-tip && exec git-receive-pack "$1"' sh"#,
+        ],
+    );
+    assert!(backend.delete_branch("race", Some(&plan)).is_err());
+    assert_eq!(
+        git_ok(&remote_path, &["rev-parse", "race"]),
+        git_ok(path, &["rev-parse", "renamed"])
+    );
+    assert_eq!(git_ok(path, &["rev-parse", "race"]), plan.old_tip);
+    git_ok(path, &["config", "--unset", "remote.upstream.receivepack"]);
+
     // A locked local ref forces the remote-first delete to roll back.
     let lock = path.join(".git/refs/heads/renamed.lock");
     std::fs::write(&lock, "").unwrap();
