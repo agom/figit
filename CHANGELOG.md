@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.7 - 2026-11-20
+
+### Added
+
+- Search commit messages and local or remote branch names. Press `a` after a search to scan all history in the background and jump to a matching commit.
+- Press `f` on an eligible graph commit to preview and autosquash staged changes into it.
+- Use `--plain-icons` or set `figit.plainIcons` for terminals without a Nerd Font.
+
+### Changed
+
+- In the graph, `p` pulls the checked-out branch and `Shift+P` cherry-picks the selected commit.
+- The `u` command is now **Restore from reflog** and previews which branch or commit it will restore.
+
+### Fixed
+
+- Remote branch rename and deletion use the configured upstream ref and protect against concurrent changes. Rename preserves a divergent remote tip, and deletion rollback restores the original remote commit.
+- Preserve loaded history across periodic refreshes so searches can reach older commits.
+- Fall back to a prerelease installer only after GitHub confirms no stable release exists.
+
 ## 0.1.6 - 2026-11-17
 
 ### Added
