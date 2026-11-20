@@ -411,7 +411,7 @@ impl App {
                     ("g", "toggle graph pane"),
                     ("Shift+H", "show/hide focused-panel shortcuts"),
                     ("j / k", "move selection"),
-                    ("/", "search commits"),
+                    ("/", "search commits and branches"),
                     ("u", "restore from reflog"),
                     ("?", "toggle this help"),
                     ("U", "check/install update"),
@@ -2785,10 +2785,12 @@ impl App {
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
             )];
-            let scope = if self.graph_complete {
-                "all history"
-            } else if search.all_history {
+            let scope = if search.looking_up() {
                 "searching all history…"
+            } else if search.navigating {
+                "loading selected commit…"
+            } else if self.graph_complete || search.all_history {
+                "all history"
             } else {
                 "loaded history · a search all"
             };

@@ -182,9 +182,9 @@ impl App {
                     }
                     add(
                         Search,
-                        "Search loaded commit messages",
+                        "Search commits and branches",
                         "/",
-                        "find|search history",
+                        "find|search history|branch names|commit messages",
                     );
                     if self.selected_local_branch().is_some() || self.selected_tag().is_some() {
                         add(Push, "Push", "+", "upload|remote");

@@ -27,6 +27,79 @@ mod helpers;
 mod remote;
 use helpers::*;
 
+/// Scan one Git log stream in graph order without building graph rows or
+/// retaining commit messages. Each branch hit identifies its tip commit.
+pub fn search_history(
+    path: &Path,
+    query: &str,
+    branch_tips: &HashSet<String>,
+    include_head: bool,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<String>> {
+    use std::io::{BufRead, BufReader};
+    use std::sync::atomic::Ordering;
+
+    let mut command = Command::new("git");
+    command.current_dir(path).args([
+        "log",
+        "--all",
+        "--date-order",
+        "--no-notes",
+        "--no-show-signature",
+        "--format=%H%x00%s%x00%b",
+        "-z",
+    ]);
+    if include_head {
+        command.arg("HEAD");
+    }
+    let diagnostics = tempfile::NamedTempFile::new()?;
+    let mut child = command
+        .arg("--")
+        .stderr(diagnostics.reopen()?)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("start history search")?;
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let result = (|| -> Result<Vec<String>> {
+        let mut matches = Vec::new();
+        let mut field = Vec::new();
+        while !cancelled.load(Ordering::Relaxed) {
+            field.clear();
+            if reader.read_until(0, &mut field)? == 0 {
+                return Ok(matches);
+            }
+            let id =
+                std::str::from_utf8(field.strip_suffix(&[0]).context("incomplete history id")?)?
+                    .to_owned();
+            let mut hit = branch_tips.contains(&id);
+            for _ in 0..2 {
+                field.clear();
+                reader.read_until(0, &mut field)?;
+                let value = field
+                    .strip_suffix(&[0])
+                    .context("incomplete history message")?;
+                hit |= String::from_utf8_lossy(value)
+                    .to_lowercase()
+                    .contains(query);
+            }
+            if hit {
+                matches.push(id);
+            }
+        }
+        anyhow::bail!("search cancelled")
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    let matches = result?;
+    if !status.success() {
+        let message = std::fs::read_to_string(diagnostics.path()).unwrap_or_default();
+        anyhow::bail!("git log failed ({status}): {}", message.trim());
+    }
+    Ok(matches)
+}
+
 const DEFAULT_DIFF_CONTEXT_LINES: usize = 3;
 const FULL_FILE_DIFF_CONTEXT_LINES: usize = 2_147_483_647;
 

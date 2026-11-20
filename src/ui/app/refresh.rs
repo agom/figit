@@ -165,7 +165,7 @@ impl App {
                 Ok(page) => page,
                 Err(error) => {
                     if let Some(search) = self.search_popup.as_mut().filter(|s| s.all_history) {
-                        search.all_history = false;
+                        search.navigating = false;
                         search.error = Some(error);
                     } else {
                         self.show_git_error(error);
@@ -204,7 +204,8 @@ impl App {
         // loaded row, so a short first page does not eagerly pull everything.
         let loaded_rows = self.rows.len() + usize::from(!self.local_status.is_empty());
         let at_end = loaded_rows > 0 && self.selected_graph + 1 >= loaded_rows;
-        if (at_end || self.search_popup.as_ref().is_some_and(|s| s.all_history))
+        let load_more = self.search_popup.as_ref().map_or(at_end, |s| s.navigating);
+        if load_more
             && !self.graph_complete
             && !self.graph_page_in_progress
             && !self.loading
