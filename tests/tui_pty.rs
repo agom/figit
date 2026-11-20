@@ -1755,9 +1755,10 @@ fn search_all_history_selects_an_unloaded_commit() {
     tui.wait_for("0 matches");
     tui.send(b"a");
     tui.wait_for("1 match");
-    tui.wait_for("all history");
+    tui.wait_for("1/1 · all history");
     tui.send(b"\x1b");
-    tui.wait_for("root commit");
+    tui.wait_until_hidden("Search all commits:");
+    tui.wait_for_selected_text("root commit");
     tui.quit();
 }
 
