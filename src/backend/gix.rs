@@ -969,6 +969,13 @@ impl super::GitBackend for GixBackend {
         Some((metadata.modified().ok()?, metadata.len()))
     }
 
+    fn plain_icons(&self) -> bool {
+        self.repo
+            .config_snapshot()
+            .boolean("figit.plainIcons")
+            .unwrap_or(false)
+    }
+
     fn working_directory(&self) -> &Path {
         &self.workdir
     }

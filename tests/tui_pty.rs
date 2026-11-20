@@ -2900,6 +2900,40 @@ fn command_picker_runs_panel_actions_and_preserves_confirmations() {
 }
 
 #[test]
+fn plain_icons_show_merge_and_tracking_state_in_eighty_columns() {
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("plain");
+    assert!(std::process::Command::new("bash")
+        .args(["fixtures/branch-merge.sh", repo.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    git_ok(&repo, &["remote", "add", "origin", "."]);
+    git_ok(&repo, &["config", "branch.main.remote", "origin"]);
+    git_ok(
+        &repo,
+        &["config", "branch.main.merge", "refs/heads/missing"],
+    );
+    git_ok(&repo, &["config", "figit.plainIcons", "true"]);
+    git_ok(&repo, &["tag", "v1", "HEAD~1"]);
+    std::fs::write(repo.join("app.rs"), "staged").unwrap();
+    git_ok(&repo, &["add", "app.rs"]);
+    let mut tui = Tui::launch_sized(&repo, None, &[], 80, 36);
+    tui.wait_for("app.rs");
+    tui.wait_for("main gone");
+    tui.wait_for("tag v1");
+    let screen = tui.contents();
+    assert!(screen.contains('▲'), "{screen}");
+    assert!(
+        !screen
+            .chars()
+            .any(|c| matches!(c as u32, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd)),
+        "{screen}"
+    );
+    tui.quit();
+}
+
+#[test]
 fn focused_panel_legends_toggle_and_follow_keyboard_focus() {
     let repository = init_hunk_staging_repository();
     let mut tui = Tui::launch_sized(repository.path(), None, &[], 140, 40);

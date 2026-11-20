@@ -233,9 +233,10 @@ the terminal background. Focused graph and file selections use a subtle neutral 
 preserving icon and change-count colors. With `NO_COLOR`, the active filename or
 commit subject is bold and underlined; inactive selections remain bold.
 
-File rows and branch indicators use Nerd Font icons; install a
-[Nerd Font](https://www.nerdfonts.com/) to render them (without one the glyphs
-show as placeholder boxes).
+File and branch icons use a [Nerd Font](https://www.nerdfonts.com/). For a standard
+terminal font, run `figit --plain-icons [PATH]` or set `git config --global figit.plainIcons true`.
+Omit `--global` for a single repository. Plain mode omits file icons and uses
+text indicators such as `HEAD`, `tag`, `gone`, and `+2 -1` for ahead/behind counts.
 
 | Key | Action |
 | --- | --- |

@@ -156,6 +156,7 @@ pub struct App {
     bg: Option<Color>,
     terminal_palette: TerminalAnsiPalette,
     no_color: bool,
+    plain_icons: bool,
     panel_hints_visible: bool,
     focus: Focus,
     selected_status: usize,
@@ -374,6 +375,7 @@ impl App {
             bg: None,
             terminal_palette: [None; 16],
             no_color: false,
+            plain_icons: false,
             panel_hints_visible: true,
             focus: if has_local_changes {
                 Focus::Status
@@ -502,6 +504,10 @@ impl App {
         app.refresh_diff();
         app.refresh_diff_stats();
         app
+    }
+
+    pub fn set_plain_icons(&mut self, enabled: bool) {
+        self.plain_icons = enabled;
     }
 
     pub fn loading(backend: Box<dyn GitBackend>) -> Self {

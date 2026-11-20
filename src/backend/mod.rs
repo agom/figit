@@ -35,6 +35,7 @@ pub struct BranchUpdate {
 /// Git operations used by the UI. Repository reads use `gix`; mutations are
 /// implemented behind this trait so UI workflows remain backend-independent.
 pub trait GitBackend {
+    fn plain_icons(&self) -> bool;
     fn working_directory(&self) -> &Path;
     fn index_fingerprint(&self) -> Option<(std::time::SystemTime, u64)>;
     fn watch_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>>;
