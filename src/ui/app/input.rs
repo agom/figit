@@ -651,7 +651,7 @@ impl App {
                 self.action_error =
                     Some("Focus the Graph with Tab and select a commit first".into());
             }
-            KeyCode::Char('p') if self.focus == Focus::Graph && !self.selected_current_branch() => {
+            KeyCode::Char('P') if self.focus == Focus::Graph && !self.selected_current_branch() => {
                 self.execute_panel_command(CommandId::Graph(GraphAction::CherryPick))
             }
             KeyCode::Char('x') if self.focus == Focus::Graph => {

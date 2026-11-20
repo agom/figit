@@ -234,7 +234,7 @@ impl App {
                             add(
                                 Graph(GraphAction::CherryPick),
                                 "Cherry-pick commit",
-                                "p",
+                                "P",
                                 "pick|apply commit",
                             );
                         }

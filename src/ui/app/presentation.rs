@@ -237,6 +237,7 @@ impl App {
                 add(ConfirmFixup, None, "fixup");
                 add(Fetch, None, "fetch");
                 add(Graph(GraphAction::Pull), None, "pull");
+                add(Graph(GraphAction::CherryPick), None, "cherry-pick");
                 let checkout = if available
                     .iter()
                     .any(|command| command.id == Graph(GraphAction::CheckoutBranch))

@@ -305,10 +305,12 @@ fn panel_hints_describe_available_file_and_diff_actions() {
     );
     app.selected_graph = 2; // commit without a branch
     assert!(app.panel_actions().contains(&("c", "checkout")));
-    assert!(!app
-        .panel_actions()
-        .iter()
-        .any(|(_, description)| description.contains("pick")));
+    assert!(app.panel_actions().contains(&("P", "cherry-pick")));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert!(app.graph_action.is_none());
+    app.handle_key(KeyEvent::from(KeyCode::Char('P')));
+    assert_eq!(app.graph_action, Some(GraphAction::CherryPick));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(!app
         .panel_actions()
         .iter()

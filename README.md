@@ -168,8 +168,8 @@ and commit file lists, it moves the file selection and updates the diff.
 | `Esc` | Close the active overlay |
 
 The focused panel shows compact shortcuts in its bottom border. The graph
-prioritizes Fetch, Pull, Checkout, and Search; Pull appears only when `p` pulls
-the current branch. Other panels show up to three relevant shortcuts.
+shows `p` for Pull on the checked-out branch and `P` for Cherry-pick on other
+commit rows, alongside Fetch, Checkout, and Search when available. Other panels show up to three relevant shortcuts.
 Hints adapt to the selected file and diff mode, and fit without wrapping in narrow
 panels. Press `Shift+H` to hide or show them for the current session; hints start
 visible on each launch. Press `?` for the full key map.
@@ -180,8 +180,6 @@ Press `:` to open commands above the focused panel’s bottom border. Type to
 fuzzy-filter command names, use `↑`/`↓` to select, `Enter` to run, and `Esc` to
 close. Commands depend on the current panel and selection. Existing confirmation
 dialogs still apply. Printable keys, including `j`/`k`, enter text in the picker.
-The existing context-sensitive `p` shortcut still cherry-picks other commits;
-Cherry-pick is also available in the Graph command picker.
 
 External repository changes refresh automatically. If filesystem watching is
 unavailable (for example, Linux watch limits are reached), Figit falls back to
@@ -196,7 +194,8 @@ background polling every five seconds.
 | `b` / `t` | Create branch / tag (the tag popup can push the tag with `Ctrl-P`) |
 | `r` | Reset (soft, mixed, hard) |
 | `n` / `d` | Rename branch / delete branch or tag (←/→ picks the target; `r` also deletes remotely) |
-| `p` | Cherry-pick, or pull when the selected commit is the current branch |
+| `p` | Pull the selected checked-out branch |
+| `P` | Cherry-pick the selected commit onto the checked-out branch |
 | `x` | Revert commit |
 | `w` / `e` | Reword / edit commit (edit pauses an interactive rebase) |
 | `i` | Interactive rebase plan |
