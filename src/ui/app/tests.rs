@@ -3901,16 +3901,18 @@ fn auto_fetch_defers_during_editing_or_rebase() {
 }
 
 #[test]
-fn compound_history_commands_are_contextual_and_need_no_shortcut() {
+fn graph_fixup_shortcut_requires_an_eligible_target_and_staged_changes() {
     let mut app = shortcut_test_app();
     app.focus = Focus::Graph;
     app.selected_graph = 2;
+    assert!(!app.panel_actions().iter().any(|(key, _)| *key == "f"));
+    app.local_status.retain(|entry| entry.index == 'M');
     let entries = app.panel_commands();
     let command = entries
         .iter()
         .find(|command| command.id == CommandId::FixupAutosquash)
         .unwrap();
-    assert!(command.key.is_empty());
+    assert_eq!(command.key, "f");
     assert!(entries
         .iter()
         .any(|command| command.id == CommandId::Autosquash && command.key.is_empty()));

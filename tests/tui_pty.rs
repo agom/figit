@@ -3802,7 +3802,7 @@ fn conflict_number_choices_base_view_and_undo_work_in_the_terminal() {
 }
 
 #[test]
-fn command_palette_runs_fixup_and_autosquash_after_confirmation() {
+fn graph_fixup_shortcut_cancels_then_autosquashes_the_selected_commit() {
     let repository = init_linear_repository();
     let path = repository.path();
     let original_head = git_ok(path, &["rev-parse", "HEAD"]);
@@ -3813,7 +3813,16 @@ fn command_palette_runs_fixup_and_autosquash_after_confirmation() {
     tui.send(b"\t\x1b[B\x1b[B");
     tui.wait_for_title_focus("Graph");
     tui.wait_for_selected_text("target commit");
-    tui.send(b":fixupandautosquash\r");
+    let index = git_ok(path, &["write-tree"]);
+    tui.wait_for("f fixup + autosquash");
+    tui.send(b"f");
+    tui.wait_for("Fixup / Autosquash");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Fixup / Autosquash");
+    assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), original_head);
+    assert_eq!(git_ok(path, &["write-tree"]), index);
+    tui.wait_for_title_focus("Graph");
+    tui.send(b"f");
     tui.wait_for("Fixup / Autosquash");
     assert_eq!(git_ok(path, &["rev-parse", "HEAD"]), original_head);
     tui.send(b"\r");

@@ -429,6 +429,7 @@ impl App {
                     ("n / d", "rename / delete ref"),
                     ("p", "pull current branch"),
                     ("P", "cherry-pick commit"),
+                    ("f", "fixup and autosquash staged changes"),
                     ("x", "revert"),
                     ("w / e", "reword / edit commit"),
                     ("i", "interactive rebase"),
@@ -1184,7 +1185,7 @@ impl App {
                     if plan.published {
                         "\nIncludes published history; a force push may be required."
                     } else {
-                        ""
+                        "\nNo remote-tracking branch contains the target."
                     }
                 ),
                 CommitMode::Reword(_) => {

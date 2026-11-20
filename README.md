@@ -114,9 +114,11 @@ disabled. `FIGIT_AUTO_FETCH=0 figit` disables it for one session. Foreground Git
 operations cancel a running background fetch before taking over. Force-with-lease
 pushes use the remote commit recorded when the push dialog opened.
 
-### Commands without shortcuts
+### Fixup and autosquash
 
-From the graph, `:` also offers **Fixup and autosquash staged changes…** and
+Stage the correction and stage or stash any remaining tracked changes. Highlight
+a non-merge commit on the current branch and press `f` to preview folding the
+staged changes into that commit. From the graph, `:` also offers **Fixup and autosquash staged changes…** and
 **Autosquash existing fixup commits…**. Select a target on the current branch;
 confirmation shows the target, affected commit count, staged file count, and
 whether the history is published. Autosquash preserves merges and stops in the
@@ -195,6 +197,7 @@ background polling every five seconds.
 | `r` | Reset (soft, mixed, hard) |
 | `n` / `d` | Rename branch / delete branch or tag (←/→ picks the target; `r` also deletes remotely) |
 | `p` | Pull the selected checked-out branch |
+| `f` | Fixup and autosquash staged changes into the selected commit |
 | `P` | Cherry-pick the selected commit onto the checked-out branch |
 | `x` | Revert commit |
 | `w` / `e` | Reword / edit commit (edit pauses an interactive rebase) |

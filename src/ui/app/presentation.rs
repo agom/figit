@@ -235,6 +235,7 @@ impl App {
         match self.focus {
             Focus::Graph => {
                 add(ConfirmFixup, None, "fixup");
+                add(FixupAutosquash, None, "fixup + autosquash");
                 add(Fetch, None, "fetch");
                 add(Graph(GraphAction::Pull), None, "pull");
                 add(Graph(GraphAction::CherryPick), None, "cherry-pick");

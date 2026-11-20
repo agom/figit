@@ -145,12 +145,16 @@ impl App {
                         if self
                             .local_status
                             .iter()
-                            .any(|e| e.index != ' ' && e.index != '?' && !e.is_conflict())
+                            .all(|e| !e.is_conflict() && matches!(e.worktree, ' ' | '?'))
+                            && self
+                                .local_status
+                                .iter()
+                                .any(|e| e.index != ' ' && e.index != '?' && !e.is_conflict())
                         {
                             add(
                                 FixupAutosquash,
                                 "Fixup and autosquash staged changes…",
-                                "",
+                                "f",
                                 "fixup and autosquash|squash|rebase",
                             );
                         }
@@ -252,7 +256,16 @@ impl App {
                     }
                     if self.commit_actions_available() && self.rebase_edit.is_none() {
                         add(Amend, "Amend commit", "a", "");
-                        add(Fixup, "Create fixup commit", "f", "squash");
+                        add(
+                            Fixup,
+                            "Create fixup commit",
+                            if self.selected_commit_id().is_none() {
+                                "f"
+                            } else {
+                                ""
+                            },
+                            "squash",
+                        );
                     }
                     add(Undo, "Restore from reflog", "u", "restore history");
                 }
