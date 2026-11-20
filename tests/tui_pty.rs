@@ -1244,12 +1244,8 @@ fn staging_and_unstaging_stay_in_the_source_panel_until_it_is_empty() {
     tui.send(b" ");
     tui.wait_for("Staged (1)");
     tui.wait_for("Unstaged (1)");
-    let screen = tui.contents();
-    assert!(
-        screen.contains("b.txt"),
-        "next unstaged file should be selected:\n{screen}"
-    );
-    assert!(screen.contains("Space stage file"));
+    tui.wait_for_selected_text("b.txt");
+    tui.wait_for("Space stage file");
 
     tui.send(b" ");
     tui.wait_for("Staged (2)");
@@ -1257,17 +1253,13 @@ fn staging_and_unstaging_stay_in_the_source_panel_until_it_is_empty() {
     tui.send(b" ");
     tui.wait_for("Staged (1)");
     tui.wait_for("Unstaged (1)");
-    let screen = tui.contents();
-    assert!(screen.contains("Space unstage file • c commit"));
-    assert!(
-        screen.contains("a.txt"),
-        "selection should stay in Staged on the remaining file:\n{screen}"
-    );
+    tui.wait_for_selected_text("a.txt");
+    tui.wait_for("Space unstage file • c commit");
 
     tui.send(b" ");
     tui.wait_for("Staged (0)");
     tui.wait_for("Unstaged (2)");
-    assert!(tui.contents().contains("Space stage file"));
+    tui.wait_for("Space stage file");
     tui.quit();
 }
 
