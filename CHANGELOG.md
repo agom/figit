@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8 - 2026-11-23
+
+### Added
+
+- Open **Worktrees…** from the command palette to switch checkouts or create a worktree. Each checkout keeps its staged and unstaged changes.
+- Choose **Open in worktree…** on a graph branch or commit to open its existing checkout or create a new one. Remote branches can create tracking branches, and commits can open in detached HEAD mode.
+
 ## 0.1.7 - 2026-11-20
 
 ### Added

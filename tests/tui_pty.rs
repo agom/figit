@@ -1755,6 +1755,98 @@ fn search_all_history_selects_an_unloaded_commit() {
 }
 
 #[test]
+fn worktree_round_trip_preserves_partial_staging_and_shares_commits() {
+    let repository = init_linear_repository();
+    let root = repository.path();
+    let destination = tempfile::tempdir().unwrap();
+    let linked = destination.path().join("linked review");
+    git_ok(root, &["branch", "review", "HEAD~1"]);
+    std::fs::write(root.join("file.txt"), "staged correction\n").unwrap();
+    git_ok(root, &["add", "file.txt"]);
+    std::fs::write(root.join("file.txt"), "staged correction\nremaining edit\n").unwrap();
+    let before_index = git_ok(root, &["diff", "--cached"]);
+    let before_worktree = git_ok(root, &["diff"]);
+    let mut tui = Tui::launch_sized(root, None, &[], 150, 36);
+    tui.wait_for("Staged (1)");
+    tui.send(b"\t\x1b[B\x1b[B");
+    tui.wait_for_selected_text("target commit");
+    tui.send(b":openinworktree\r");
+    tui.wait_for("Existing branch: review");
+    tui.send(b"\x15");
+    tui.send(linked.to_str().unwrap().as_bytes());
+    tui.send(b"\r");
+    tui.wait_for("linked review / review");
+    assert_eq!(git_ok(&linked, &["status", "--porcelain"]), "");
+    git_ok(
+        &linked,
+        &["commit", "--allow-empty", "-m", "shared review commit"],
+    );
+    tui.wait_for("shared review commit");
+    tui.send(b":worktrees\r");
+    tui.wait_for("Enter open");
+    tui.send(b"\x1b[A\r");
+    tui.wait_for("Staged (1)");
+    tui.wait_for("Unstaged (1)");
+    tui.wait_for("shared review commit");
+    assert_eq!(git_ok(root, &["branch", "--show-current"]), "main");
+    assert_eq!(git_ok(root, &["diff", "--cached"]), before_index);
+    assert_eq!(git_ok(root, &["diff"]), before_worktree);
+    tui.send(b"/shared review commit\r");
+    tui.wait_for("1 match");
+    tui.send(b"\x1b");
+    tui.wait_until_hidden("Search loaded commits:");
+    tui.send(b"\r");
+    tui.wait_for("Enter open");
+    tui.send(b"\r");
+    tui.wait_for("linked review / review");
+    tui.quit();
+}
+
+#[test]
+fn graph_worktree_creation_tracks_remote_and_supports_detached_review() {
+    let repository = init_linear_repository();
+    let root = repository.path();
+    let directory = tempfile::tempdir().unwrap();
+    let linked = directory.path().join("tracking");
+    let detached = directory.path().join("detached");
+    git_ok(root, &["remote", "add", "origin", "."]);
+    git_ok(
+        root,
+        &["update-ref", "refs/remotes/origin/review", "HEAD~1"],
+    );
+    let mut tui = Tui::launch_sized(root, None, &[], 150, 36);
+    tui.wait_for_selected_text("tip commit");
+    tui.send(b"\x1b[B");
+    tui.wait_for_selected_text("target commit");
+    tui.send(b":openinworktree\r");
+    tui.wait_for("From: origin/review");
+    tui.send(b"\t\x15");
+    tui.send(linked.to_str().unwrap().as_bytes());
+    tui.send(b"\r");
+    tui.wait_for("tracking / review");
+    assert_eq!(
+        git_ok(&linked, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/review"
+    );
+    tui.send(b":worktrees\r");
+    tui.wait_for("Enter open");
+    tui.send(b"n");
+    tui.wait_for("(detached)");
+    tui.send(b"\t\x15");
+    tui.send(detached.to_str().unwrap().as_bytes());
+    tui.send(b"\r");
+    tui.wait_for("detached / detached HEAD");
+    assert_eq!(
+        git_ok(&detached, &["rev-parse", "HEAD"]),
+        git_ok(root, &["rev-parse", "HEAD~1"])
+    );
+    assert!(!git(&detached, &["symbolic-ref", "-q", "HEAD"])
+        .status
+        .success());
+    tui.quit();
+}
+
+#[test]
 fn branch_search_matches_local_and_remote_names_once_per_tip() {
     let repository = init_linear_repository();
     let path = repository.path();

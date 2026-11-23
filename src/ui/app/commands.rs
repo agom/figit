@@ -3,6 +3,8 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CommandId {
     Graph(GraphAction),
+    Worktrees,
+    OpenWorktree,
     Fetch,
     Push,
     Search,
@@ -535,6 +537,17 @@ impl App {
                 "zoom|expand",
             );
         }
+        if !busy && self.repository_path.is_some() {
+            add(Worktrees, "Worktrees…", "", "switch worktree|new worktree");
+            if self.focus == Focus::Graph && self.selected_commit_id().is_some() {
+                add(
+                    OpenWorktree,
+                    "Open in worktree…",
+                    "",
+                    "create worktree|linked checkout",
+                );
+            }
+        }
         entries
     }
 
@@ -581,6 +594,8 @@ impl App {
             }
             Graph(GraphAction::Delete) => self.open_delete_action(),
             Graph(action) => self.open_graph_action(action),
+            Worktrees => self.show_worktrees(),
+            OpenWorktree => self.worktree_from_graph(),
             Fetch => self.open_remote_action(false),
             FixupAutosquash => self.open_autosquash(true),
             Autosquash => self.open_autosquash(false),

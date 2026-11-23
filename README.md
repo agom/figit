@@ -96,6 +96,22 @@ figit --help
 figit --version
 ```
 
+### Worktrees
+
+Open `:` and choose **Worktrees…** to switch between checkouts. The picker
+shows the branch (or detached commit), directory, and current checkout.
+Use the arrows and `Enter` to open a worktree. Each checkout keeps its own
+index and working files. Press `n` to create a worktree from the current HEAD.
+
+From a selected graph row, **Open in worktree…** uses its local branch, remote
+branch, or commit. If the branch already has another checkout, the picker opens
+with that directory selected. Otherwise review the source and suggested sibling
+directory. For a commit, enter a new branch name or leave it empty for detached
+HEAD. For a remote branch, the suggested new branch tracks the remote.
+Use `Tab` to change fields, `Ctrl+U` to clear the active field, `Enter` to
+create and open, and `Esc` to cancel. Relative paths start at the current
+worktree root. Worktree removal remains available through Git.
+
 ### Background fetching
 
 After the first screen is displayed, figit fetches configured remotes in the
