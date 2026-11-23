@@ -57,6 +57,13 @@ impl App {
     /// Open a graph action that operates on a branch at the selected commit.
     /// Checkout accepts remote-tracking branches too; rename remains local-only.
     pub(super) fn open_branch_ref_action(&mut self, action: GraphAction) {
+        if action == GraphAction::CheckoutBranch {
+            if let Some(branch) = self.selected_local_branch() {
+                if self.offer_occupied_worktree(&branch) {
+                    return;
+                }
+            }
+        }
         let has_branch = self.selected_local_branch().is_some()
             || (action == GraphAction::CheckoutBranch && self.selected_remote_branch().is_some());
         if !has_branch {

@@ -1,4 +1,5 @@
 pub mod gix;
+pub(crate) mod worktrees;
 
 use std::path::Path;
 

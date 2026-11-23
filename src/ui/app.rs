@@ -23,6 +23,7 @@ mod text;
 mod update;
 mod watch;
 mod workflows;
+mod worktrees;
 
 #[cfg(test)]
 mod tests;
@@ -196,6 +197,8 @@ pub struct App {
     action_error: Option<String>,
     undo_options: Vec<UndoInfo>,
     undo_selection: usize,
+    worktrees: Option<worktrees::Dialog>,
+    worktree_label: Option<String>,
     repository_path: Option<PathBuf>,
     watch_tx: SyncSender<()>,
     watch_rx: Receiver<()>,
@@ -418,6 +421,8 @@ impl App {
             action_error: None,
             undo_options: Vec::new(),
             undo_selection: 0,
+            worktrees: None,
+            worktree_label: None,
             repository_path,
             watch_tx,
             watch_rx,

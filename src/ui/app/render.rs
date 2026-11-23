@@ -397,6 +397,7 @@ impl App {
             self.render_help_popup(f, area);
         }
         self.render_command_picker(f);
+        self.render_worktrees(f);
         self.apply_terminal_theme(f.buffer_mut());
     }
 

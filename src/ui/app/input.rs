@@ -72,7 +72,8 @@ impl App {
 
     /// True when no modal popup is capturing input.
     pub(super) fn modal_closed(&self) -> bool {
-        self.graph_action.is_none()
+        self.worktrees.is_none()
+            && self.graph_action.is_none()
             && !self.commit_dialog.visible()
             && !self.abort_rebase_popup
             && self.rebase_plan.is_none()
@@ -87,6 +88,10 @@ impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> bool {
         if self.local_job.is_some() {
             return self.handle_remote_key(key);
+        }
+        if self.worktrees.is_some() {
+            self.worktree_key(key);
+            return false;
         }
         if self.command_picker.is_some() {
             self.handle_command_picker_key(key);

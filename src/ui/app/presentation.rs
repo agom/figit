@@ -167,6 +167,7 @@ impl App {
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "figit".into());
+        let repository = self.worktree_label.as_deref().unwrap_or(&repository);
         let branch = self.graph.head_name.as_deref().unwrap_or("detached HEAD");
         let tracking = self
             .tracking_by_branch
